@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub engine: EngineConfig,
@@ -16,12 +17,21 @@ pub struct Config {
     pub maintenance: MaintenanceConfig,
 }
 
+/// Engine knobs. She checks the fine print on both sides of the desk:
+/// unknown keys are refused by name, not silently filed under "probably meant something".
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EngineConfig {
     #[serde(default = "default_true")]
     pub fail_open: bool,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// Live reload: in-process embedders watch the policy root and swap
+    /// the law mid-flight (see [`Engine::watch_policies`]); every CLI
+    /// invocation re-reads regardless. The Karen who changes her mind
+    /// before you finish saving it.
+    #[serde(default = "default_true")]
+    pub hot_reload: bool,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
 }
@@ -31,12 +41,14 @@ impl Default for EngineConfig {
         Self {
             fail_open: true,
             log_level: default_log_level(),
+            hot_reload: true,
             timeout_ms: default_timeout(),
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyConfig {
     #[serde(default = "default_rules_dir")]
     pub rules_dir: String,
@@ -44,8 +56,6 @@ pub struct PolicyConfig {
     pub gates_dir: String,
     #[serde(default = "default_true")]
     pub validate_on_load: bool,
-    #[serde(default = "default_true")]
-    pub watch_for_changes: bool,
 }
 
 impl Default for PolicyConfig {
@@ -54,12 +64,12 @@ impl Default for PolicyConfig {
             rules_dir: default_rules_dir(),
             gates_dir: default_gates_dir(),
             validate_on_load: true,
-            watch_for_changes: true,
         }
     }
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StateConfig {
     #[serde(default = "default_backend")]
     pub backend: String,
@@ -77,6 +87,7 @@ impl Default for StateConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MaintenanceConfig {
     /// Temp-file prefixes she prunes on `SessionStart`; empty disables pruning. The Karen who knows exactly what she threw out, why she threw it out, and will describe the smell if you ask. Or don't ask. She's describing it either way.
     #[serde(default)]
@@ -177,10 +188,19 @@ enum GateFile {
     Many { gates: Vec<GateDef> },
 }
 
+/// Find the policy root, nearest-first: `$KAREN_POLICIES` if set, then
+/// `./policies` in the current directory, then `$CLAUDE_PLUGIN_ROOT/policies`,
+/// then any `policies/` directory above the binary. The Karen who checks
+/// where she's standing before she checks the building — your project
+/// outranks her installation, and both outrank her upbringing.
 #[must_use]
 pub fn locate_policies() -> PathBuf {
     if let Ok(path) = std::env::var("KAREN_POLICIES") {
         return PathBuf::from(path);
+    }
+    let local = Path::new("policies");
+    if local.is_dir() {
+        return local.to_path_buf();
     }
     if let Ok(root) = std::env::var("CLAUDE_PLUGIN_ROOT") {
         let candidate = PathBuf::from(root).join("policies");
@@ -328,13 +348,103 @@ mod tests {
 
     #[test]
     fn loads_gates_and_rules() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("policies");
-        let set = load(&root).expect("policies load");
-        assert!(!set.gates.is_empty(), "expected at least one gate");
-        assert!(!set.rules.is_empty(), "expected at least one rule");
+        // The Karen who builds her own evidence instead of borrowing the
+        // author's: a fresh root, generic gates, and no dependency on any
+        // filing cabinet that didn't ship with the crate.
+        let dir = tempfile::tempdir().expect("temp policy root");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("gates")).expect("gates dir");
+        std::fs::create_dir_all(root.join("rules")).expect("rules dir");
+        std::fs::write(
+            root.join("gates").join("low.json"),
+            r#"{
+                "id": "low-priority",
+                "event": "PreToolUse",
+                "priority": 10,
+                "match": { "all": [ { "type": "always" } ] },
+                "action": { "type": "deny", "reason": "no" }
+            }"#,
+        )
+        .expect("low gate");
+        std::fs::write(
+            root.join("gates").join("high.json"),
+            r#"{
+                "id": "high-priority",
+                "event": "PreToolUse",
+                "priority": 90,
+                "match": { "all": [ { "type": "always" } ] },
+                "action": { "type": "deny", "reason": "absolutely not" }
+            }"#,
+        )
+        .expect("high gate");
+        std::fs::write(
+            root.join("rules").join("rule.md"),
+            "# Be excellent\nTo each other.\n",
+        )
+        .expect("rule");
+
+        let set = load(root).expect("policies load");
+        assert_eq!(
+            set.gates.len(),
+            2,
+            "expected exactly the two gates she wrote"
+        );
+        assert!(!set.rules.is_empty(), "expected the rule she filed");
         assert!(
             set.gates.windows(2).all(|w| w[0].priority >= w[1].priority),
             "gates must be priority ordered"
+        );
+        assert_eq!(
+            set.gates[0].id, "high-priority",
+            "the higher priority gate sorts first — she reads the file names, not just the files"
+        );
+    }
+
+    #[test]
+    fn typos_do_not_become_always_gates() {
+        // A typo'd `match` once silently defaulted to a matcher that
+        // matched EVERYTHING — blanket enforcement born from a spelling
+        // error, blessed by validate. The strict schema refuses the
+        // typo and names the key. She checks the spelling before she
+        // checks you.
+        let dir = tempfile::tempdir().expect("temp policy root");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("gates")).expect("gates dir");
+        std::fs::create_dir_all(root.join("rules")).expect("rules dir");
+        std::fs::write(
+            root.join("gates").join("typo.json"),
+            r#"{ "id": "typo-gate", "event": "PreToolUse", "matc": { "all": [ { "type": "command_contains", "value": "git push --force" } ] }, "action": { "type": "deny", "reason": "never fires on benign commands" } }"#,
+        )
+        .expect("typo gate");
+        let err = load(root).expect_err("a typo'd gate key must fail to load");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("matc"),
+            "the error must name the offending key: {msg}"
+        );
+        assert!(
+            msg.contains("match"),
+            "the error must list the key she expected: {msg}"
+        );
+    }
+
+    #[test]
+    fn typos_in_config_are_named_not_swallowed() {
+        // `faile_open` under [engine] once sailed through silently and
+        // the default took over — intent filed in the trash, no
+        // receipt. Now she names it. She checks the fine print on both
+        // sides of the desk.
+        let dir = tempfile::tempdir().expect("temp policy root");
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("gates")).expect("gates dir");
+        std::fs::create_dir_all(root.join("rules")).expect("rules dir");
+        std::fs::write(root.join("config.toml"), "[engine]\nfaile_open = true\n")
+            .expect("typo config");
+        let err = load(root).expect_err("a typo'd config key must fail to load");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("faile_open"),
+            "the error must name the offending key: {msg}"
         );
     }
 }
