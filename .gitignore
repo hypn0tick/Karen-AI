@@ -1,0 +1,51 @@
+# Build artifacts
+/target/
+
+# Personal rules - DO NOT COMMIT
+# These are user-specific and should be generated per-installation
+/policies/
+
+# Legacy JS guardrails system (the predecessor). Kept locally, out of the public repo.
+# The Karen who does not discuss her predecessor at parties.
+/core/
+/scripts/
+/config/
+/settings.jsonc
+/run-tests.mjs
+/agent-progress.mjs
+
+# Distribution artifacts - deferred until a release exists to point at.
+# The Karen who refuses to give directions to a store that hasn't opened.
+/Formula/
+/.claude-plugin/
+/.codex-plugin/
+/.agents/
+/.onedev-buildspec.yml
+
+# Debug leftovers
+/test_input.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local development overrides
+.env
+.env.local
+*.local.toml
+
+# Editor/IDE temp files
+*.orig
+*~
+
+# Cargo.lock IS committed: this is a binary crate and reproducible builds are
+# the hill she chose to die on. The Karen who keeps receipts, dependency-shaped.
