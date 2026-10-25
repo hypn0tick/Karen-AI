@@ -3,5 +3,7 @@
 pub mod dispatcher;
 pub mod injector;
 pub mod maintenance;
+pub mod watch;
 
 pub use dispatcher::Engine;
+pub use watch::{WatchError, WatchGuard};
