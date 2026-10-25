@@ -5,29 +5,70 @@ use crate::policy::PolicySet;
 use crate::policy::gate::{ActionDef, Gate};
 use crate::state::StateStore;
 use crate::types::{Action, EngineRequest, EngineResponse, Event, Injection, InjectionKind};
+use std::sync::{Arc, RwLock};
 
 pub struct Engine {
-    policies: PolicySet,
+    // The filing cabinet, shared with the live-reload watcher: a read
+    // lock for every ruling, a write lock only for reloads. The Karen
+    // who lets exactly one trusted colleague swap the law mid-shift —
+    // nobody else touches the cabinet.
+    policies: Arc<RwLock<PolicySet>>,
     state: Box<dyn StateStore>,
 }
 
 impl Engine {
     #[must_use]
     pub fn new(policies: PolicySet, state: Box<dyn StateStore>) -> Self {
-        Self { policies, state }
+        Self {
+            policies: Arc::new(RwLock::new(policies)),
+            state,
+        }
     }
 
+    /// The current policy set, cloned fresh from the cabinet. She hands
+    /// you a copy, not the original — the original is load-bearing.
+    ///
+    /// # Panics
+    ///
+    /// If the policy lock is poisoned — which takes a panic mid-reload,
+    /// and a panic mid-reload is already the fire alarm. The Karen who
+    /// falls rather than freezes at her desk.
     #[must_use]
-    pub fn policies(&self) -> &PolicySet {
-        &self.policies
+    pub fn policies(&self) -> PolicySet {
+        self.policies
+            .read()
+            .expect("policy lock poisoned — she does not freeze mid-ruling")
+            .clone()
     }
 
-    /// Swap policies while she's running. She reloads before your finger leaves Ctrl+S. The Karen who's already ready, manager on speed dial.
+    /// Crate-internal handle for the live-reload watcher. The Karen who
+    /// shares her filing cabinet with one colleague, on a need-to-know basis.
+    #[must_use]
+    pub(crate) fn shared_policies(&self) -> Arc<RwLock<PolicySet>> {
+        Arc::clone(&self.policies)
+    }
+
+    /// Swap policies while she's running. She reloads before your finger leaves Ctrl+S — and with [`Engine::watch_policies`], she reloads without being asked at all. The Karen who's already ready, manager on speed dial.
+    ///
+    /// # Panics
+    ///
+    /// If the policy lock is poisoned. The only way in is a watcher or
+    /// an embedder that panicked mid-swap; she treats that as a reason
+    /// to make noise, not a reason to go quiet.
     pub fn replace_policies(&mut self, policies: PolicySet) {
-        self.policies = policies;
+        *self
+            .shared_policies()
+            .write()
+            .expect("policy lock poisoned — she does not freeze mid-ruling") = policies;
     }
 
     /// Evaluate a request and deliver a verdict. The Karen who judges every tool call, looking for any reason to call the manager.
+    ///
+    /// # Panics
+    ///
+    /// If the policy lock is poisoned. She would rather stop loudly
+    /// than rule quietly from a cabinet she cannot trust — and the
+    /// harness above her has fail-open for exactly this.
     #[must_use]
     pub fn dispatch(&self, req: &EngineRequest) -> EngineResponse {
         let mut fired = Vec::new();
@@ -39,7 +80,12 @@ impl Engine {
             injector::invalidate(self.state.as_ref(), &req.session_id);
         }
 
-        for gate in self.applicable(req) {
+        let policies = self
+            .policies
+            .read()
+            .expect("policy lock poisoned — she does not freeze mid-ruling");
+
+        for gate in Self::applicable(&policies, req) {
             if !gate.matcher.matches(req) {
                 continue;
             }
@@ -88,7 +134,7 @@ impl Engine {
 
         if matches!(req.event, Event::SessionStart | Event::UserPromptSubmit) {
             if let Some(injection) = injector::rule_injection(
-                &self.policies,
+                &policies,
                 self.state.as_ref(),
                 &req.session_id,
                 false,
@@ -106,8 +152,11 @@ impl Engine {
         }
     }
 
-    fn applicable<'a>(&'a self, req: &EngineRequest) -> impl Iterator<Item = &'a Gate> {
-        self.policies
+    fn applicable<'a>(
+        policies: &'a PolicySet,
+        req: &EngineRequest,
+    ) -> impl Iterator<Item = &'a Gate> {
+        policies
             .gates
             .iter()
             .filter(|gate| gate.applies_to(&req.event, req.tool_name.as_deref()))
