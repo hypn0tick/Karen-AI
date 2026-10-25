@@ -72,6 +72,13 @@ jobs:
       - name: Build release
         run: cargo build --release
 
+      - name: Scaffold a minimal policy root (the desk arrives empty; someone has to put one paper on it)
+        run: |
+          mkdir policies
+          mkdir policies/gates
+          printf '%s\n' '{ "id": "ci-smoke", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "This gate exists so CI can prove the desk loads. She approves of proof of employment." } }' > policies/gates/ci-smoke.json
+          cp examples/gates/*.json policies/gates/
+
       - name: Verify binary
         run: |
           ./target/release/karen --help
@@ -114,6 +121,13 @@ jobs:
       - name: Build release
         run: cargo build --release
 
+      - name: Scaffold a minimal policy root (the desk arrives empty; someone has to put one paper on it)
+        run: |
+          mkdir policies
+          mkdir policies/gates
+          printf '%s\n' '{ "id": "ci-smoke", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "This gate exists so CI can prove the desk loads. She approves of proof of employment." } }' > policies/gates/ci-smoke.json
+          cp examples/gates/*.json policies/gates/
+
       - name: Verify binary
         run: |
           ./target/release/karen --help
@@ -155,6 +169,12 @@ jobs:
 
       - name: Build release
         run: cargo build --release
+
+      - name: Scaffold a minimal policy root (the desk arrives empty; someone has to put one paper on it)
+        run: |
+          New-Item -ItemType Directory -Force -Path policies\gates | Out-Null
+          Set-Content -Path policies\gates\ci-smoke.json -Value '{ "id": "ci-smoke", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "This gate exists so CI can prove the desk loads. She approves of proof of employment." } }'
+          Copy-Item examples\gates\*.json policies\gates\
 
       - name: Verify binary
         run: |
