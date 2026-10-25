@@ -1,0 +1,83 @@
+// ADVANCED 3 — precedence, demonstrated instead of claimed.
+//
+// Three shields, one file, priority-ordered so you can watch the law
+// work: the secrets deny at 80 short-circuits BEFORE the namespace ask
+// at 60 can even evaluate — she does not escalate what she can deny
+// outright. And the bonus nuance, verified from the dispatcher: an ask
+// never shields a teaching gate below it from counting its strike —
+// she files everything she sees, escalation or no escalation.
+//
+// Teaches: field_equals on structured payloads (the exact-value
+// matcher, used where exactness is the point), content_regex on
+// written config, path_regex, and the Deny > Modify > Ask > Allow law
+// written where users will actually read it.
+{
+  "gates": [
+    {
+      "id": "secrets-in-written-config-denied",
+      "name": "Secrets in written config: denied before escalation is even considered",
+      "description": "The same credential patterns as no-secrets-in-commands.json, watching the OTHER surface: files being written. Defense in depth, fenced twice.",
+      "event": "PostToolUse",
+      "tool": "Write|Edit",
+      "priority": 80,
+      "enabled": true,
+      "tags": ["security", "secrets", "precedence-demo"],
+
+      "match": {
+        "all": [
+          { "type": "content_regex", "pattern": "AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|-----BEGIN\\s+(RSA\\s+|EC\\s+|OPENSSH\\s+)?PRIVATE KEY-----" }
+        ]
+      },
+
+      "action": {
+        "type": "deny",
+        "reason": "A credential appeared in written config. The deny short-circuits at priority 80; the ask below never even saw this. Rotate the secret and move it to the secret store — she has already filed the location."
+      }
+    },
+    {
+      "id": "prod-namespace-asked",
+      "name": "field_equals on structured payloads: exact truths only",
+      "description": "For tools whose payloads carry structured fields (deployment CLIs, API-writing tools): she reads the field, not the vibes. Inert for payloads without the field — she checks the drawer, not the room.",
+      "event": "PreToolUse",
+      "priority": 60,
+      "enabled": true,
+      "tags": ["infrastructure", "field-equals", "escalation"],
+
+      "match": {
+        "all": [
+          // field_equals compares tool_input.<field> for EXACT equality.
+          // This is what it's for: discrete truths. "namespace" IS "prod".
+          // For shapes and patterns, use path_regex — exactness is a
+          // scalpel, and she labels her tools.
+          { "type": "field_equals", "field": "namespace", "value": "prod" }
+        ]
+      },
+
+      "action": {
+        "type": "ask",
+        "reason": "This tool call targets the prod namespace exactly. Approve it yourself — that's what the desk is for, and she has already cleared a space for the paperwork."
+      }
+    },
+    {
+      "id": "ci-workflow-edits-asked",
+      "name": "CI workflow edits get a human",
+      "description": "Edits that change how the project builds and ships are escalated, not blocked — pipeline surgery is above her pay grade and she knows it.",
+      "event": "PreToolUse",
+      "tool": "Edit|Write",
+      "priority": 40,
+      "enabled": true,
+      "tags": ["infrastructure", "escalation", "path-regex"],
+
+      "match": {
+        "all": [
+          { "type": "path_regex", "pattern": "(?i)(^|[\\\\/])\\.github[\\\\/]workflows[\\\\/].+\\.(ya?ml|json|toml)$|(^|[\\\\/])\\.gitlab-ci\\.(ya?ml|toml)$|(^|[\\\\/])\\.circleci[\\\\/]" }
+        ]
+      },
+
+      "action": {
+        "type": "ask",
+        "reason": "This edit changes how the project builds and ships. She doesn't deny it — she hands it to the one person authorized to approve pipeline surgery. The file is already open at your desk."
+      }
+    }
+  ]
+}

@@ -8,6 +8,8 @@ mod cli;
 #[cfg(test)]
 mod common;
 #[cfg(test)]
+mod examples_pack;
+#[cfg(test)]
 mod hook;
 #[cfg(test)]
 mod policy;

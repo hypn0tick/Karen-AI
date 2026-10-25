@@ -1,0 +1,31 @@
+// Example 7 — escalation as a first-class verdict. Teaches: the `ask`
+// action, the `any` block, and command_contains. These commands are
+// not denied — they are escalated to the only person with the
+// authority to approve them. That's you. The manager clause,
+// operationalized.
+{
+  "id": "break-glass-ask",
+  "name": "Irrevocable commands get escalated, not executed",
+  "description": "Destructive, hard-to-undo commands are handed to the manager — you — instead of blocked outright.",
+  "event": "PreToolUse",
+  "tool": "Bash",
+  "priority": 80,
+  "enabled": true,
+  "tags": ["safety", "escalation", "ask"],
+
+  "match": {
+    // The `any` block: one hit from any condition is enough. She only
+    // needs one reason, and she is very good at finding them.
+    "any": [
+      { "type": "command_contains", "value": "git reset --hard" },
+      { "type": "command_contains", "value": "git clean -fd" },
+      { "type": "command_contains", "value": "DROP TABLE" },
+      { "type": "command_regex", "pattern": "\\brm\\s+(-[a-zA-Z]*r[a-zA-Z]*f\\b|-[a-zA-Z]*f[a-zA-Z]*r\\b|-rf\\b)" }
+    ]
+  },
+
+  "action": {
+    "type": "ask",
+    "reason": "This command is destructive and hard to walk back. She has brought it to your desk with the file already open. Approve it yourself or rewrite it — she does not sign off on other people's demolitions."
+  }
+}

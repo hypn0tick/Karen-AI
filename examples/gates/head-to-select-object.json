@@ -1,0 +1,30 @@
+// Example 6 — the modify verdict. Teaches: the modifier field, and the
+// engine's one shipped rewriter. `head -N` becomes the portable
+// equivalent in flight, and the protocol carries both the replacement
+// and her explanation for it. Portability, not preference.
+{
+  "id": "head-to-select-object",
+  "name": "Convert Unix head to PowerShell Select-Object",
+  "description": "The engine's one shipped modifier, demonstrated: head rewrites to Select-Object before the command runs.",
+  "event": "PreToolUse",
+  "tool": "Bash",
+  "priority": 60,
+  "enabled": true,
+  "tags": ["portability", "modify", "windows"],
+
+  "match": {
+    "all": [
+      { "type": "command_regex", "pattern": "\\bhead\\s+(-n\\s*)?-?\\d+" }
+    ]
+  },
+
+  "action": {
+    "type": "modify",
+    "reason": "Rewriting head to the portable equivalent for Windows compatibility — she confiscates the Unix habit at the border and hands back the exchange.",
+    // `modifier` names the engine's built-in rewriter. Exactly one
+    // ships today; unknown names fall back to the fixed `input` below.
+    // She does not pretend a fixed replacement is a rewrite.
+    "modifier": "head-to-select-object",
+    "input": null
+  }
+}
