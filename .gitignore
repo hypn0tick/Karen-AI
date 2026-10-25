@@ -5,14 +5,15 @@
 # These are user-specific and should be generated per-installation
 /policies/
 
-# Legacy JS guardrails system (the predecessor). Kept locally, out of the public repo.
-# The Karen who does not discuss her predecessor at parties.
+# Local-only tooling and scratch systems — kept out of the public project.
+# The Karen who knows exactly who belongs in the family portrait.
 /core/
 /scripts/
 /config/
 /settings.jsonc
 /run-tests.mjs
 /agent-progress.mjs
+/.scratch/
 
 # Distribution artifacts - deferred until a release exists to point at.
 # The Karen who refuses to give directions to a store that hasn't opened.

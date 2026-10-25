@@ -16,10 +16,11 @@ cargo build --release
 
 # Run the full quality suite (what CI runs)
 cargo fmt --check
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test
 
 # Run the binary manually
+mkdir -p policies/gates policies/rules  # scratch policy root (gitignored — she keeps it out of your diffs)
 ./target/release/karen validate
 ./target/release/karen check
 ```
@@ -43,13 +44,13 @@ cargo test
 
 - **Edition 2024**, minimum Rust 1.85
 - `cargo fmt` — formatting is non-negotiable
-- `cargo clippy -- -D warnings` — zero warnings
+- `cargo clippy --all-targets -- -D warnings` — zero warnings
 - All public items must have doc comments
 - Follow the existing Karen voice in doc comments: "The Karen who..."
 
 ### Commit Messages
 
-karen enforces these via the `commit-attribution` gate:
+The author's karen enforces these on his own pushes via his personal `commit-attribution` gate — it doesn't ship with the repo, because your standards are yours:
 
 - **No AI attribution** — no `Co-Authored-By: Claude`, no `🤖`, no `noreply@anthropic.com`
 - **Conventional Commits** preferred: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`
@@ -70,16 +71,17 @@ karen enforces these via the `commit-attribution` gate:
 ```bash
 # The full suite — mirrors CI exactly
 cargo fmt --check
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 cargo test
 
 # Quick validation
 cargo build --release
+mkdir -p policies/gates policies/rules   # scratch policy root (gitignored)
 ./target/release/karen validate
 ./target/release/karen check
 ```
 
-karen's `cargo-quality-gate`, `backticks-in-comments`, and `head-to-select-object` gates will deny pushes that don't pass. Yes, she gates her own repo. She told you she holds herself to the same standard.
+The author's karen runs his personal `cargo-quality-gate`, `backticks-in-comments`, and `head-to-select-object` gates on pushes to this repo — none of them ship with it; they're his, kept home. Yes, she audits his work on his own project. She told you she holds herself to the same standard, and this is what that looks like: his rules on his repo, your rules on yours.
 
 ---
 
@@ -88,9 +90,9 @@ karen's `cargo-quality-gate`, `backticks-in-comments`, and `head-to-select-objec
 The Karen who checks your boxes, then adds three more.
 
 - [ ] `cargo fmt --check` passes
-- [ ] `cargo clippy -- -D warnings` passes (zero warnings)
+- [ ] `cargo clippy --all-targets -- -D warnings` passes (zero warnings)
 - [ ] `cargo build --release` ran (e2e and integration tests exec this binary)
-- [ ] `cargo test` passes (all 128 tests: 9 unit + 17 integration + 102 e2e, zero ignored)
+- [ ] `cargo test` passes (all 147 tests: 14 unit + 17 integration + 116 e2e, zero ignored)
 - [ ] New code has doc comments with Karen voice
 - [ ] Commit messages follow conventions (no AI attribution)
 - [ ] Comments use backticks for code identifiers
@@ -111,10 +113,7 @@ src/
 ├── state/               # FileStore, MemoryStore, ReadOnlyStore
 └── types.rs             # Shared types (Event, Action, Injection, etc.)
 
-policies/
-├── config.toml          # Engine config
-├── rules/               # Always-on markdown rules (7 files)
-└── gates/               # JSON/JSONC/JSON5 gates (7 files)
+policies/                # Yours — local-only, not in this repo (the author's stays home; see README: Example Policies)
 ```
 
 ---
@@ -138,7 +137,7 @@ cargo test --test integration
 cargo test karen_verifies_deny_protocol_shape
 ```
 
-All 128 tests must pass (9 unit + 17 integration + 102 e2e — zero ignored). The Karen who counts, then counts again.
+All 147 tests must pass (14 unit + 17 integration + 116 e2e — zero ignored). The Karen who counts, then counts again.
 
 ---
 
@@ -160,6 +159,7 @@ GitHub Actions will build and publish binaries.
 
 - Check existing issues and PRs
 - Read the README — it's thorough, and she made it that way on purpose
+- Read the [ROADMAP](ROADMAP.md) — audited, not dictated: she doesn't write direction, she approves it
 - Ask in discussions if unsure
 
 ---

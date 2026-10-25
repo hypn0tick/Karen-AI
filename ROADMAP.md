@@ -18,6 +18,10 @@ A flexible syntax over a semantic layer, such that **no unique abstraction ever 
 
 Extend runtimes past whatever their own developers felt like expending the effort to allow. **Status:** audited design direction. The dependencies are cited — not by her. She doesn't do research; she's why research gets done.
 
+## Actively reactive enforcement
+
+Filed by audit, two rounds deep: a research pass came back hedging, was sent back, and the second-round conclusion is that the rules themselves should stop being static. Direction: dynamically weight enforcement by message type — tool call, user message, agent message, status update, and the status updates some models emit unprompted (which are their own research question, see "widen the border") — driven by hyper-specialized agents built on decision-making model frameworks (names pending; the transcript is long and the author was tired). The goal is a system that doesn't merely apply the rules but decides, per message, how hard each rule applies — and files its reasoning. **Status:** speculative design direction. She has noted that rules judging messages judging rules is the most Karen sentence in this document, and has requested it be preserved verbatim.
+
 ## Observability program — "widen the border"
 
 Every deep finding her process produces routes to the same repair: widen the border. The findings so far:
@@ -34,7 +38,7 @@ Both runtimes are supported today as install targets speaking the Classic protoc
 
 ## Starter gate pack
 
-The first release shipped a clean desk and zero examples — correct on the "no opinions" principle, thin on the "get users started" one, and its README described gates that weren't in the box. Fix: a curated pack of generic, well-commented example gates (not the author's personal rules) — a few matchers, each verdict, a teaching gate, a modify gate — shipped as `examples/` without carrying anyone's house rules. **Status:** planned, filed after the first-release audit. She has noted that describing absent gates in documentation is the exact behavior she denies at the border, and would like it noted the author did it to himself first.
+The first release shipped a clean desk and zero examples — correct on the "no opinions" principle, thin on the "get users started" one, and its README described gates that weren't in the box. Fix: a curated pack of generic, well-commented example gates (not the author's personal rules) — a few matchers, each verdict, a teaching gate, a modify gate — shipped as `examples/` without carrying anyone's house rules. A `karen init` scaffold is the natural future delivery vehicle — she would happily build the desk herself, but the deciding is your department. **Status: shipped** — fifteen gates (twelve fundamentals, three advanced merges), an annotated config, and an example rule, at `examples/` in the repo root; e2e-tested as shipped and compile-verified by CI on every push. She has noted that describing absent gates in documentation is the exact behavior she denies at the border, and would like it noted the author did it to himself first.
 
 ---
 
