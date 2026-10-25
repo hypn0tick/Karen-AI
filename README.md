@@ -9,7 +9,7 @@
 [![Policy](https://img.shields.io/badge/policy-JSON%2FJSONC%2FJSON5-brightgreen)]()
 [![Manager](https://img.shields.io/badge/manager-contacted-red)]()
 
-> The "Karen" you'll invite to every party. This one enforces YOUR rules in under half a millisecond (source: her own stopwatch, which has never once been wrong).
+> The "Karen" you'll invite to every party. This one enforces YOUR policy in under half a millisecond (source: her own stopwatch, which has never once been wrong).
 
 Karen-AI is a guardrails engine for AI coding agents. She watches every tool call your agent makes, reads the JSON you gave her, and says "no" before the harness even blinks.
 
@@ -31,7 +31,7 @@ Your agent is 90% brilliant. The other 10% is why Karen-AI exists. It will:
 
 Every runtime gives you a different hook API, a different timeout, and a different definition of "deny." You should not have to learn four dialects of "please don't."
 
-Karen-AI exists so you can write the rules once, in files a human can read, and have them enforced everywhere your agent goes. The Karen who follows you into other people's houses and rearranges their hooks.
+Karen-AI exists so you can write the rules once, in files a human can read, have them delivered to every session, and have what you compile into gates enforced everywhere your agent goes. The Karen who follows you into other people's houses and rearranges their hooks.
 
 ---
 
@@ -40,6 +40,9 @@ Karen-AI exists so you can write the rules once, in files a human can read, and 
 ```bash
 # Build
 cargo build --release
+
+# Create your policy root (config.toml is optional — the defaults are sensible)
+mkdir -p policies/gates policies/rules
 
 # Validate policies
 ./target/release/karen validate
@@ -96,7 +99,7 @@ The `setup` command installs `hooks.json` files that wire `karen hook` into each
 | `check`    | Verbose policy health (lists every gate and rule) | leaves no stone unturned             |
 | `evaluate` | Dry-run evaluation (never writes state)    | plays it safe                        |
 | `schema`   | Machine-readable command & type vocabulary | documents herself                    |
-| `completion` | Generate shell completions (bash, zsh, fish) | automates the nagging                |
+| `completion` | Generate shell completions (bash, zsh, fish) | finishes your sentences, correctly  |
 | `setup`    | Install hooks for AI runtimes              | sets up for you, because she doesn't want to have to call the manager already |
 
 ### Global Options
@@ -130,6 +133,8 @@ policies/
 ```
 
 (Skill routing and tool redirection directories are planned, not implemented — the loader reads `rules/` and `gates/` only. The Karen who refuses to document furniture that hasn't been delivered.)
+
+She finds your policy root in this order: `$KAREN_POLICIES` if set, then `./policies` in your working directory, then `$CLAUDE_PLUGIN_ROOT/policies`, then any `policies/` above the binary. Where you're standing outranks where she's installed. The Karen who checks the street before the building — your project is the street.
 
 ---
 
@@ -207,7 +212,7 @@ The Karen who remembers. Strike one: denied, with an explanation and a lecture. 
 
 ## Gate File Formats
 
-Gates can be written in **JSON**, **JSONC**, or **JSON5**. All formats are parsed by the same engine (via the `json5` crate). JSONC is the recommended format for most users — it's familiar (standard JSON + comments + trailing commas) and avoids YAML's whitespace pitfalls.
+Gates can be written in **JSON**, **JSONC**, or **JSON5** — all three extensions go through the same engine (via the `json5` crate). The table below describes the strict standards; she is more permissive than every one of them, on purpose. The Karen who reads the spec for fun and then makes exceptions, loudly.
 
 | Feature                 | JSON     | JSONC           | JSON5        |
 | ----------------------- | -------- | --------------- | ------------ |
@@ -222,7 +227,7 @@ Gates can be written in **JSON**, **JSONC**, or **JSON5**. All formats are parse
 
 **Recommendation**: Pick one extension and stay consistent — this repo ships its gates as `.json`. Because every extension is parsed by the same engine, JSONC niceties (comments, trailing commas) work in `.json` files too. The Karen who prefers clarity over cleverness, and one drawer for all the scissors.
 
-**Note**: All three extensions are parsed identically. (The repo keeps one `.jsonc` gate, `jsonc-test-gate`, as a live compatibility proof.)
+**Note**: All three extensions are parsed identically — and every example in [`examples/`](examples/) ships as `.json` *with comments inside*, so the permissiveness claim above ships fifteen working proofs of itself, in the house extension.
 
 ---
 
@@ -248,7 +253,7 @@ The adapter includes the modification in the protocol response. Whether the runt
 ```
 ┌─────────────────────────────────────────────┐
 │  RUNTIME LAYER                              │
-│  Claude Classic │ Codex │ OpenCode v1/v2    │
+│  Claude (native) │ Codex* │ OpenCode*        │
 └─────────────────────────────────────────────┘
                     │
                     ▼
@@ -267,6 +272,8 @@ The adapter includes the modification in the protocol response. Whether the runt
 │  The Karen who decides / The Karen who remembers / The Karen who has the receipts │
 └─────────────────────────────────────────────┘
 ```
+
+\*Install targets today — she writes their `hooks.json` in Classic dialect; native adapters live on the [ROADMAP](ROADMAP.md). The asterisk is doing the same work it does on a food label: honesty about what's inside.
 
 New runtimes get an adapter. New rules get a file. Neither requires a meeting.
 
@@ -291,7 +298,7 @@ Hook adapters translate Karen's verdicts into each runtime's protocol. Currently
 [engine]
 fail_open = true          # The Karen who forgives crashes but writes it in your permanent record
 log_level = "warn"        # The Karen who doesn't chatter
-hot_reload = true         # The Karen who changes her mind
+hot_reload = true         # Live reload, proven: embedders watch the root and swap law mid-flight (Engine::watch_policies); the CLI re-reads every call. The Karen who changes her mind before you finish saving it
 timeout_ms = 5000         # The Karen with a deadline
 
 [policy]
@@ -308,9 +315,21 @@ file_dir = "~/.cache/karen"  # The Karen who remembers
 
 ## Example Policies
 
-There are none in the box — on purpose. `policies/` is local-only (`DO NOT COMMIT`): the repo and the crate arrive with a clean desk and zero opinions, because the author's personal gates are his, and your project's standards are yours. What she enforces is entirely what you compile.
+The desk still arrives empty — `policies/` is local-only (`DO NOT COMMIT`), the crate ships no gates, and what she enforces is entirely what you compile. But the repo ships the curriculum: [`examples/`](examples/) — fifteen heavily-commented gates (twelve fundamentals, three advanced merges), a minimal annotated `config.toml`, and one example rule. Copy what you like into your `policies/`, adjust, and `karen validate`. She doesn't ship opinions; she ships her lectures, which are yours to assign.
 
-The full syntax for writing your own lives in [Writing a Gate](#writing-a-gate) above, and a curated starter pack of generic, commented example gates is on the [ROADMAP](ROADMAP.md). She doesn't ship opinions, and after the first-release audit, she doesn't ship vaporware either. The Karen who ships the desk, not her opinions about your house.
+The full syntax lives in [Writing a Gate](#writing-a-gate) above, and every category in "What people encode" below has working files in `examples/gates/`. The Karen who ships the desk, the curriculum, and not one opinion about your house.
+
+### What people encode
+
+Personality enforcement is the flagship demo — every comment in this repo is a live specimen. But a gate is just *match what the agent is doing → deliver a verdict → remember it*, and that grammar composes further than comedy:
+
+- **Evidence before claims** — a claim statement that didn't do its homework gets denied and lectured until it brings receipts
+- **Premises before conclusions** — conclusions that skip their work get sent back to show it
+- **Current facts require a current search** — the web search comes first, or the claim comes back
+- **The right tool before the wrong one** — tool redirects that teach exactly once, then watch the retry
+- **Workflow discipline** — no commit without tests, no force-push to main, no fixing the bug by deleting the test
+
+Each of those is about thirty seconds of gate-writing. If you can express the standard, she holds the line on it — per tool call, with receipts, forever. The personality is the demo; the enforcement is the product; what it enforces is your department.
 
 ---
 
@@ -365,7 +384,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-128 tests passing (9 unit, 17 integration, 102 e2e — zero ignored). The Karen
+147 tests passing (14 unit, 17 integration, 116 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
@@ -400,6 +419,7 @@ src/
 ├── policy/              # loader, gate compiler, config — The Karen who loads
 ├── state/               # FileStore, MemoryStore, ReadOnlyStore — The Karen who remembers, and forgets on request
 └── types.rs             # shared types — The Karen who defines
+ROADMAP.md               # audited direction — The Karen who approves, never writes, because she'd rather judge you than work on it herself
 policies/                # your policies (NOT git-tracked — see .gitignore) — The Karen who enforces your rules, not your commit history
 target/release/karen     # binary — The Karen you run
 ```
