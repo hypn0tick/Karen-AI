@@ -6,7 +6,13 @@ use serde::Deserialize;
 use std::fmt;
 
 /// Raw gate as written in your gate file. The Karen who reads your drafts, has notes, and is still looking for any excuse to call your manager.
+///
+/// Unknown keys are refused by name: a typo'd `match` once silently
+/// became a matcher that matched everything, and a gate that fires on
+/// the whole world because of a spelling error is an incident wearing
+/// a typo's clothes. She checks the spelling before she checks you.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GateDef {
     pub id: String,
     #[serde(default)]
@@ -40,6 +46,7 @@ const fn default_enabled() -> bool {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatchExpr {
     #[serde(default)]
     pub all: Vec<ConditionDef>,
@@ -104,6 +111,7 @@ pub enum ActionDef {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StateSpec {
     #[serde(default = "default_track")]
     pub track: String,
