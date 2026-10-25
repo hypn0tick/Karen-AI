@@ -11,16 +11,54 @@ fn binary() -> String {
     path.to_string_lossy().to_string()
 }
 
+// The Karen who brings her own evidence to every interview: each test gets
+// a fresh policy root with her fixture gates and rules — no borrowing the
+// author's filing cabinet, which never shipped anyway.
+fn fixture_policies() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp policy root");
+    let root = dir.path();
+    std::fs::write(root.join("config.toml"), "[engine]\nfail_open = true\n").expect("config");
+    let gates = root.join("gates");
+    std::fs::create_dir_all(&gates).expect("gates dir");
+    std::fs::write(
+        gates.join("force-push.json"),
+        r#"{ "id": "fixture-force-push", "event": "PreToolUse", "priority": 90, "match": { "all": [ { "type": "command_regex", "pattern": "git\\s+push.*--force" } ] }, "action": { "type": "deny", "reason": "Fixture gate: no force pushes, not even on Fridays." } }"#,
+    )
+    .expect("gate");
+    std::fs::write(
+        gates.join("jq-yaml.json"),
+        r#"{ "id": "fixture-jq-yaml", "event": "PreToolUse", "priority": 60, "match": { "all": [ { "type": "command_regex", "pattern": "jq\\s+.*\\.ya?ml" } ] }, "action": { "type": "deny_once_then_warn", "first_reason": "Use yq for YAML.", "second_reason": "Allowing jq on retry — she saw the whole thing." }, "state": { "key": "fixture-jq-yaml", "max_strikes": 2 } }"#,
+    )
+    .expect("gate");
+    std::fs::write(
+        gates.join("head-rewrite.json"),
+        r#"{ "id": "fixture-head-rewrite", "event": "PreToolUse", "priority": 40, "match": { "all": [ { "type": "command_regex", "pattern": "^head\\s+-n?\\s*\\d+" } ] }, "action": { "type": "modify", "reason": "Fixture gate: rewriting head to Select-Object for portability.", "modifier": "head-to-select-object" } }"#,
+    )
+    .expect("gate");
+    let rules = root.join("rules");
+    std::fs::create_dir_all(&rules).expect("rules dir");
+    for n in 1..=4 {
+        let body = format!(
+            "# Standing rule {n}\n\n{}\n",
+            "Do the thing correctly, in writing. ".repeat(250)
+        );
+        std::fs::write(rules.join(format!("rule-{n}.md")), body).expect("rule");
+    }
+    dir
+}
+
 fn run_hook(input: &str, args: &[&str]) -> (i32, String, String) {
     // The Karen who isolates her state: tests never write to the real
     // ~/.cache/karen. Your permanent record is YOUR permanent record —
     // she doesn't pad it with her rehearsals, and she rehearsed plenty.
     let home = tempfile::tempdir().expect("temp home for hook state");
+    let policies = fixture_policies();
     let mut cmd = Command::new(binary());
     cmd.env("HOME", home.path());
     cmd.arg("hook");
     cmd.arg("--adapter");
     cmd.arg("claude-classic");
+    cmd.arg("--policies").arg(policies.path());
     cmd.args(args);
     let mut child = cmd
         .stdin(std::process::Stdio::piped())
@@ -105,8 +143,10 @@ fn hook_sessionstart_part_beyond_count_is_empty() {
 /// validate command reports policy health as JSON envelope
 #[test]
 fn validate_command_reports_policy_health() {
+    let policies = fixture_policies();
     let mut cmd = Command::new(binary());
     cmd.arg("validate");
+    cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
     let output = cmd.output().expect("failed to run validate");
     assert!(output.status.success());
@@ -120,8 +160,10 @@ fn validate_command_reports_policy_health() {
 /// check command lists gates and rules in JSON
 #[test]
 fn check_command_lists_gates_and_rules() {
+    let policies = fixture_policies();
     let mut cmd = Command::new(binary());
     cmd.arg("check");
+    cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
     let output = cmd.output().expect("failed to run check");
     assert!(output.status.success());
@@ -129,7 +171,7 @@ fn check_command_lists_gates_and_rules() {
         serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid json");
     assert_eq!(out["status"], "ok");
     let gates = out["data"]["gates"].as_array().unwrap();
-    // Should have at least the 3 example gates
+    // Should have at least her three fixture gates
     assert!(gates.len() >= 3);
     for gate in gates {
         assert!(gate["id"].is_string());
@@ -143,8 +185,10 @@ fn check_command_lists_gates_and_rules() {
 #[test]
 fn evaluate_command_dry_runs() {
     let input = r#"{"hook_event_name":"PreToolUse","session_id":"test-eval","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
+    let policies = fixture_policies();
     let mut cmd = Command::new(binary());
     cmd.arg("evaluate");
+    cmd.arg("--policies").arg(policies.path());
     cmd.arg("--request");
     cmd.arg("-");
     cmd.arg("--json");
@@ -231,8 +275,10 @@ fn unknown_schema_topic_returns_error() {
 /// JSON field filtering works on validate output
 #[test]
 fn validate_json_fields_filter() {
+    let policies = fixture_policies();
     let mut cmd = Command::new(binary());
     cmd.arg("validate");
+    cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
     cmd.arg("--fields");
     cmd.arg("gate_count,rule_count");
@@ -252,8 +298,10 @@ fn validate_json_fields_filter() {
 /// Unknown fields in --fields returns error
 #[test]
 fn validate_json_unknown_fields_errors() {
+    let policies = fixture_policies();
     let mut cmd = Command::new(binary());
     cmd.arg("validate");
+    cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
     cmd.arg("--fields");
     cmd.arg("nonexistent_field");
@@ -284,26 +332,30 @@ fn missing_policies_returns_config_error() {
     assert_eq!(out["error"]["code"], "POLICY_NOT_FOUND");
 }
 
-/// Engine loads gates from YAML and rules from markdown
+/// Engine loads gates from JSON and rules from markdown
 #[test]
 fn engine_loads_gates_and_rules_from_files() {
+    let policies = fixture_policies();
     let mut cmd = Command::new(binary());
     cmd.arg("validate");
+    cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
     let output = cmd.output().expect("failed to run validate");
     assert!(output.status.success());
     let out: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid json");
-    // Should have loaded the example gates and rules
+    // Should have loaded her fixture gates and rules
     assert!(out["data"]["gate_count"].as_u64().unwrap() >= 3);
     assert!(out["data"]["rule_count"].as_u64().unwrap() >= 4);
 }
 
-/// Engine respects `fail_open` config (defaults to true)
+/// Engine reads `fail_open` from config.toml
 #[test]
-fn engine_fail_open_defaults_to_true() {
+fn engine_reads_fail_open_from_config() {
+    let policies = fixture_policies();
     let mut cmd = Command::new(binary());
     cmd.arg("validate");
+    cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
     let output = cmd.output().expect("failed to run validate");
     assert!(output.status.success());
@@ -315,23 +367,21 @@ fn engine_fail_open_defaults_to_true() {
 /// Hook protocol denies return permissionDecision: "deny" with reason
 #[test]
 fn hook_deny_returns_protocol_object() {
-    // This tests the PROTOCOL SHAPE, not a specific rule.
-    // We can't predict which rule fires, but we can verify the deny shape.
-    let input = r#"{"hook_event_name":"PreToolUse","session_id":"test-deny-shape","tool_name":"Bash","tool_input":{"command":"git commit -m \"x\""}}"#;
+    // The Karen who writes a gate she knows will fire: the fixture force-push
+    // gate guarantees the deny shape, so the shape gets proven, not sampled.
+    let input = r#"{"hook_event_name":"PreToolUse","session_id":"test-deny-shape","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#;
     let (code, stdout, _stderr) = run_hook(input, &[]);
     assert_eq!(code, 0);
     let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
-    // If a gate fires (deny), output must be protocol object with hookSpecificOutput
-    if out.get("hookSpecificOutput").is_some() {
-        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
-        assert!(out["hookSpecificOutput"]["permissionDecisionReason"].is_string());
-    } else if out.get("systemMessage").is_some() {
-        // deny_once_then_warn first strike returns systemMessage
-        assert!(out["systemMessage"].is_string());
-    } else {
-        // Allow path: empty object
-        assert_eq!(out, serde_json::json!({}));
-    }
+    assert!(
+        out.get("hookSpecificOutput").is_some(),
+        "expected a deny protocol object, got: {stdout}"
+    );
+    assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(
+        out["hookSpecificOutput"]["permissionDecisionReason"].is_string(),
+        "a deny without a reason is just a mood: {stdout}"
+    );
 }
 
 /// Hook allows returns {} (no stdout content beyond empty object)
