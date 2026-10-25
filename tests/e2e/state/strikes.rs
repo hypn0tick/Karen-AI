@@ -20,7 +20,6 @@ timeout_ms = 5000
 rules_dir = "rules"
 gates_dir = "gates"
 validate_on_load = true
-watch_for_changes = true
 
 [state]
 backend = "memory"
@@ -38,7 +37,6 @@ timeout_ms = 5000
 rules_dir = "rules"
 gates_dir = "gates"
 validate_on_load = true
-watch_for_changes = true
 
 [state]
 backend = "file"
