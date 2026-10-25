@@ -1,0 +1,55 @@
+// Example 10 — one file, two gates, and the law of the land.
+//
+// THE LAW (verified from the dispatcher): Deny short-circuits the
+// moment it is reached. Without a deny, Modify beats Ask beats Allow.
+// Priority orders ARRIVAL — it does not let a permission overrule a
+// prohibition. The rehearsal below is allowed because the ask's own
+// matcher EXCLUDES --dry-run (the `none` block), NOT because the
+// allow gate outranks it. An allow never shields anything: without
+// that none-block, the rehearsal would get the lecture too.
+// She is not overruled by permissions; you sharpen what she stops.
+{
+  "gates": [
+    {
+      "id": "rehearsal-allowed",
+      "name": "Dry-run deletes are the rehearsal — allowed",
+      "description": "Documentation-as-gate: the exclusion lives in the ask below, and this gate exists to say so out loud.",
+      "event": "PreToolUse",
+      "tool": "Bash",
+      "priority": 90,
+      "enabled": true,
+      "tags": ["infrastructure", "precedence-demo"],
+      "match": {
+        "all": [
+          { "type": "command_regex", "pattern": "\\b(kubectl|terraform)\\s+delete\\b[^&|;]*--dry-run" }
+        ]
+      },
+      "action": { "type": "allow" }
+    },
+    {
+      "id": "performance-asked",
+      "name": "Real deletes go to the manager",
+      "description": "Live infrastructure deletion without --dry-run: escalated to the desk, with the file already open.",
+      "event": "PreToolUse",
+      "tool": "Bash",
+      "priority": 40,
+      "enabled": true,
+      "tags": ["infrastructure", "precedence-demo"],
+      "match": {
+        "all": [
+          { "type": "command_regex", "pattern": "\\b(kubectl|terraform)\\s+delete\\b" }
+        ],
+        // The whole trick: the rehearsal is excluded HERE. This is what
+        // "allow with exceptions" looks like in a system where allows
+        // never overrule — the exception lives in the stop, not the pass.
+        "none": [
+          { "type": "command_contains", "value": "--dry-run" }
+        ]
+      },
+      "action": {
+        "type": "ask",
+        "reason": "Live infrastructure deletion. Rehearse it with --dry-run first, or bring it to the manager — both are respectable; guessing is not."
+      }
+    }
+  ]
+}

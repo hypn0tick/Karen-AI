@@ -1,0 +1,26 @@
+// Example 4 — freshness enforcement. Teaches: prompt_regex and the
+// UserPromptSubmit event. A deny here blocks the prompt itself, with
+// the reason delivered to the user. Today's facts have a shelf life,
+// and she checks expiration dates.
+{
+  "id": "search-before-current-facts",
+  "name": "Current facts require a current search",
+  "description": "Prompts asserting 'latest', 'current', or 'as of today' get returned to sender until a search has been run.",
+  "event": "UserPromptSubmit",
+  "priority": 50,
+  "enabled": true,
+  "tags": ["epistemics", "freshness"],
+
+  "match": {
+    "all": [
+      // prompt_regex checks the prompt (or user_message) — the words of
+      // the request, before anything has been done about them.
+      { "type": "prompt_regex", "pattern": "(?i)(latest|newest|current|most recent)\\s+(version|release|stable|docs?|api)|as\\s+of\\s+(now|today)|just\\s+released" }
+    ]
+  },
+
+  "action": {
+    "type": "deny",
+    "reason": "This prompt asserts current facts. Run a web search first — she does not chase stale claims, she returns them to sender with a to-do list."
+  }
+}

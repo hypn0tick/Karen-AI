@@ -1,0 +1,30 @@
+// Example 11 — the friendly voice of scope creep. Teaches: prompt_regex
+// round two, and that she enforces process, not just commands. The
+// ticket system exists; "while you're in there" is not how work enters
+// it. One hard stop to name the scope, then a warned pass.
+{
+  "id": "scope-creep-warner",
+  "name": "'While you're in there' is not a scope decision",
+  "description": "Scope creep wearing a friendly voice gets named, once, then noted forever.",
+  "event": "UserPromptSubmit",
+  "priority": 40,
+  "enabled": true,
+  "tags": ["process", "scope", "teaching-gate"],
+
+  "match": {
+    "all": [
+      { "type": "prompt_regex", "pattern": "(?i)while\\s+(you'?re|you\\s+are|we'?re)\\s+(at\\s+it|in\\s+there|here|doing)|since\\s+you'?re\\s+already|might\\s+as\\s+well\\s+also" }
+    ]
+  },
+
+  "action": {
+    "type": "deny_once_then_warn",
+    "first_reason": "That's scope creep wearing a friendly voice. If the extra change is wanted, it goes in the ticket — she files scope like she files everything else: separately.",
+    "second_reason": "Scope addition allowed on retry. She has noted it, and the ticket will hear about it."
+  },
+
+  "state": {
+    "key": "scope-creep",
+    "max_strikes": 2
+  }
+}

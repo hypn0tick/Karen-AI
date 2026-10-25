@@ -1,0 +1,28 @@
+// Example 12 — the emergency brake, shipped OFF. Teaches: the `always`
+// matcher, the `enabled` flag, and one honest engine limit: she has no
+// calendar matcher. The one schedule she respects is yours. Flip
+// `enabled` when the freeze starts; flip it back when it ends; she
+// does not need to know why, she just needs it on record.
+{
+  "id": "friday-deploy-freeze",
+  "name": "Deploy freeze (manual — she can't read calendars)",
+  "description": "Ships disabled. When enabled, ALL Bash commands are denied until you switch it back. The always matcher: matches everything, asks nothing.",
+  "event": "PreToolUse",
+  "tool": "Bash",
+  "priority": 99,
+  // The brake, not applied. She believes in brakes; she does not believe
+  // in applying yours without your hand on the lever.
+  "enabled": false,
+  "tags": ["deploy", "freeze", "manual-brake"],
+
+  "match": {
+    "all": [
+      { "type": "always" }
+    ]
+  },
+
+  "action": {
+    "type": "deny",
+    "reason": "Deploy freeze is ON. She is not debating the date with a deployment; take it up with the calendar's owner."
+  }
+}

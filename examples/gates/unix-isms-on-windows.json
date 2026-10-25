@@ -1,0 +1,68 @@
+// ADVANCED 2 — the portability suite. One multi-gate file, and one
+// honest engine limit stated where you'll meet it: exactly ONE
+// modifier ships with the engine ("head-to-select-object" — see that
+// example for the one true rewrite). Unknown modifier names fall back
+// to replacing the input with a fixed value, which she refuses to
+// pretend is a rewrite. So grep and sed get teaching gates instead:
+// they lecture, they don't rewrite. Yet. The ROADMAP has opinions.
+//
+// Teaches: multi-gate files, teaching gates in a themed suite, and the
+// difference between what the engine rewrites and what it redirects.
+{
+  "gates": [
+    {
+      "id": "grep-portability-lecture",
+      "name": "grep on Windows: use Select-String",
+      "description": "She teaches the portable spelling, once per session, with feeling.",
+      "event": "PreToolUse",
+      "tool": "Bash",
+      "priority": 55,
+      "enabled": true,
+      "tags": ["portability", "teaching-gate"],
+
+      "match": {
+        "all": [
+          { "type": "command_regex", "pattern": "\\bgrep\\b" }
+        ]
+      },
+
+      "action": {
+        "type": "deny_once_then_warn",
+        "first_reason": "grep is not native on Windows — Select-String is the portable equivalent. If you're on a Unix shell, carry on and the retry passes; if you're not, she just saved you a red pipeline.",
+        "second_reason": "grep allowed on retry — she has noted the shell you're apparently using."
+      },
+
+      "state": {
+        "key": "grep-portability",
+        "max_strikes": 2
+      }
+    },
+    {
+      "id": "sed-portability-lecture",
+      "name": "sed on Windows: she does not improvise surgery",
+      "description": "sed's portable equivalents vary by operation — so she stops it once and asks for intent, instead of guessing a rewrite she can't verify.",
+      "event": "PreToolUse",
+      "tool": "Bash",
+      "priority": 45,
+      "enabled": true,
+      "tags": ["portability", "teaching-gate"],
+
+      "match": {
+        "all": [
+          { "type": "command_regex", "pattern": "\\bsed\\b" }
+        ]
+      },
+
+      "action": {
+        "type": "deny_once_then_warn",
+        "first_reason": "sed's portable equivalent depends on the operation — for find-replace, the PowerShell idiom is `-replace`; for the rest, name your intent and use the right tool. She could guess a rewrite; guessing is what other projects do.",
+        "second_reason": "sed allowed on retry — noted, with the shell recorded for the file."
+      },
+
+      "state": {
+        "key": "sed-portability",
+        "max_strikes": 2
+      }
+    }
+  ]
+}

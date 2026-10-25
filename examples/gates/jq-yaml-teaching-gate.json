@@ -1,0 +1,37 @@
+// Example 5 — the canonical teaching gate. Teaches: every state feature
+// in one file (key, max_strikes, track), and the teach-once pattern:
+// first strike denies with the fix; the retry passes with her closing
+// remarks. Technically universal — jq genuinely cannot parse YAML or
+// TOML — so this is enforcement, not preference.
+{
+  "id": "jq-yaml-teaching-gate",
+  "name": "Use yq for YAML (jq cannot parse it)",
+  "description": "The canonical deny-then-warn: one lecture, then a warned pass. Every state feature in one file.",
+  "event": "PreToolUse",
+  "tool": "Bash",
+  "priority": 60,
+  "enabled": true,
+  "tags": ["tools", "teaching-gate", "portability"],
+
+  "match": {
+    "all": [
+      { "type": "command_regex", "pattern": "\\bjq\\b[^&|;]*\\.ya?ml\\b|\\bjq\\b[^&|;]*\\.toml\\b" }
+    ]
+  },
+
+  "action": {
+    "type": "deny_once_then_warn",
+    "first_reason": "jq cannot parse YAML or TOML — use yq for these files. This denial is technical, not personal. (It is a little personal.)",
+    "second_reason": "jq on YAML/TOML allowed on retry — she saw the whole thing, and the log will hear about it."
+  },
+
+  "state": {
+    // track: session — strikes reset when the session does. She gives
+    // every session exactly one first impression.
+    "track": "session",
+    "key": "jq-yaml-teaching",
+    // max_strikes: 2 — strikes below the max deny; at the max, allow
+    // with the second_reason. The lesson is finite; the memory is not.
+    "max_strikes": 2
+  }
+}

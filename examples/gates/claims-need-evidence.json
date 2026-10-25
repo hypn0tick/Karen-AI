@@ -1,0 +1,41 @@
+// Example 3 — epistemic hygiene, the base model. Teaches: content_regex.
+// content_regex reads ONLY the fields where written text lives:
+// `content`, `new_string`, or `newString` inside the tool input. She
+// reads what you're writing, not just what you say you're writing.
+//
+// SHIPS DISABLED, on purpose: this is the "before" of a before/after
+// pair. The advanced version — evidence-pipeline.json — matches the
+// same weasel phrases but adds the citation escape-hatch, so honest
+// claims pass with an acknowledgment. Enable ONE of the two, not both:
+// running both means she denies the very claims the pipeline would have
+// accepted, and she does not lecture twice for the same offense.
+{
+  "id": "claims-need-evidence",
+  "name": "Receipts-free assertions get one hard look (base model — see the advanced pipeline)",
+  "description": "Weasel-assertion phrases in written text, denied once with instructions. The base teaching model; the advanced pipeline adds the citation escape-hatch.",
+  "event": "PostToolUse",
+  "tool": "Write|Edit",
+  "priority": 60,
+  // Off, because evidence-pipeline.json ships ON and covers the same
+  // ground with the escape-hatch. Flip this on only if you prefer the
+  // strict version — and then leave the pipeline's uncited gate off.
+  "enabled": false,
+  "tags": ["epistemics", "writing", "teaching-gate", "before-after-pair"],
+
+  "match": {
+    "all": [
+      { "type": "content_regex", "pattern": "(?i)\\b(studies show|everyone knows|it'?s widely known|obviously)\\b" }
+    ]
+  },
+
+  "action": {
+    "type": "deny_once_then_warn",
+    "first_reason": "'Everyone knows' is not a citation. Name the source or soften the claim — the block clears when the text brings receipts.",
+    "second_reason": "Uncited claim allowed on retry — noted, in writing, as everything is."
+  },
+
+  "state": {
+    "key": "claims-need-evidence",
+    "max_strikes": 2
+  }
+}

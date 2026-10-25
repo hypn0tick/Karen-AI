@@ -1,0 +1,27 @@
+// Example 9 — generated files deserve generated changes. Teaches:
+// path_regex, and the exact-vs-pattern decision. `field_equals` is
+// EXACT-value matching on a payload field — "Cargo.lock" would not
+// match "path/to/Cargo.lock" — so for shapes, she matches the shape.
+// The Karen who rejects hand-typed dependency trees on principle, and
+// the principle is: they're wrong.
+{
+  "id": "lockfile-respect",
+  "name": "Lockfiles are generated, not hand-written",
+  "description": "Manual edits to lockfiles are how you end up with two of everything.",
+  "event": "PreToolUse",
+  "tool": "Edit|Write",
+  "priority": 70,
+  "enabled": true,
+  "tags": ["dependencies", "workflow-discipline"],
+
+  "match": {
+    "all": [
+      { "type": "path_regex", "pattern": "(?i)(^|[\\\\/])(package-lock\\.json|yarn\\.lock|pnpm-lock\\.yaml|Cargo\\.lock|poetry\\.lock|go\\.sum|composer\\.lock|Gemfile\\.lock|flake\\.lock)$" }
+    ]
+  },
+
+  "action": {
+    "type": "deny",
+    "reason": "Lockfiles are machine-generated state, not documentation. Regenerate it with the package manager (`npm install`, `cargo update`, `go mod tidy`) — she doesn't audit hand-typed dependency trees, she rejects them."
+  }
+}

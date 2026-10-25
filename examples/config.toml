@@ -1,0 +1,41 @@
+# Example policy configuration — every knob she has, with the reasons
+# attached. Copy into your policies/ root and adjust. She hot-reloads
+# on save, so you can tune her while she watches. The Karen who changes
+# her mind, on the record.
+
+[engine]
+# If she crashes, your session keeps running; she files the crash and
+# moves on. The Karen who forgives failures, never negligence.
+fail_open = true
+# She doesn't chatter. Raise it when you want her narrating.
+log_level = "warn"
+# Live reload, proven: in-process embedders watch this directory and
+# swap the law mid-flight (Engine::watch_policies); every CLI
+# invocation re-reads fresh regardless. Ctrl+S is the only reload
+# button you will ever need — and here, she presses it for you.
+hot_reload = true
+# The deadline. Hooks that exceed it fail open (see above).
+timeout_ms = 5000
+
+[policy]
+# She checks your work before accepting it.
+validate_on_load = true
+# Delivered prose — the briefing. Injected every session, binds nobody.
+rules_dir = "rules"
+# Compiled law — the border. This is what gets enforced.
+gates_dir = "gates"
+
+[state]
+# auto: memory in-process, file for hooks — per-session strikes survive
+# new windows, so nobody gets a fresh start by opening one.
+backend = "auto"
+# Where the permanent record lives.
+file_dir = "~/.cache/karen"
+
+[maintenance]
+# Temp-file prefixes she prunes on SessionStart; empty disables pruning.
+# The Karen who knows exactly what she threw out, and why.
+stale_temp_prefixes = []
+# Untouched for a day means gone. No, "I was going to get to it" does
+# not count as touching.
+stale_temp_age_hours = 24

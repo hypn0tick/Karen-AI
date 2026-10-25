@@ -1,0 +1,85 @@
+// ADVANCED 1 — conditional enforcement: denied until receipts.
+//
+// The pipeline, not just the punishment: claims without citations get
+// one hard stop; claims WITH citations get an acknowledgment every
+// single time. Merges: complementary matchers (the `none` block is
+// the citation escape-hatch), teaching state, priority order, and the
+// max_strikes: 1 discovery — a teaching gate with max_strikes 1 never
+// reaches its denial branch, so it becomes a notice-injector that
+// fires on every match. The strike she files is a compliment.
+//
+// (The base model is claims-need-evidence.json — same concern, one
+// matcher. This is what it grows into when the honest claims need a
+// way through the door.)
+{
+  "gates": [
+    {
+      "id": "uncited-claims-denied",
+      "name": "Claims without citations: one hard look",
+      "description": "Weasel-assertion phrases with no citation nearby — denied once, with instructions for the fix.",
+      "event": "PostToolUse",
+      "tool": "Write|Edit",
+      "priority": 80,
+      "enabled": true,
+      "tags": ["epistemics", "evidence-pipeline"],
+
+      "match": {
+        "all": [
+          // content_regex reads the written text — the `content`,
+          // `new_string`, or `newString` fields. She reads what you're
+          // writing, not just what you say you're writing.
+          { "type": "content_regex", "pattern": "(?i)\\b(studies show|everyone knows|it'?s widely known|research suggests)\\b" }
+        ],
+        // The escape hatch: cite something, and this gate goes quiet.
+        // Rust's regex has no lookaheads — the `none` block IS the
+        // lookahead. She does exclusion honestly, as a first-class
+        // citizen.
+        "none": [
+          { "type": "content_regex", "pattern": "(?i)(https?://|source:|per the docs|according to)" }
+        ]
+      },
+
+      "action": {
+        "type": "deny_once_then_warn",
+        "first_reason": "The claim arrived without its paperwork. Name the source or soften the claim — the block clears the moment the text brings receipts.",
+        "second_reason": "Uncited claim passed on retry — noted, in writing, as everything is."
+      },
+
+      "state": {
+        "key": "evidence-pipeline-denied",
+        "max_strikes": 2
+      }
+    },
+    {
+      "id": "cited-claims-acknowledged",
+      "name": "Claims with citations: acknowledged, every time",
+      "description": "The same phrases WITH a citation — the pipeline's exit, signed. max_strikes: 1 means she skips the denial entirely.",
+      "event": "PostToolUse",
+      "tool": "Write|Edit",
+      "priority": 40,
+      "enabled": true,
+      "tags": ["epistemics", "evidence-pipeline"],
+
+      "match": {
+        "all": [
+          { "type": "content_regex", "pattern": "(?i)\\b(studies show|everyone knows|it'?s widely known|research suggests)\\b" },
+          { "type": "content_regex", "pattern": "(?i)(https?://|source:|per the docs|according to)" }
+        ]
+      },
+
+      "action": {
+        // The first_reason is unreachable by construction when
+        // max_strikes is 1 — she keeps it on file anyway, because a
+        // form with a blank field is a form she refuses to file.
+        "type": "deny_once_then_warn",
+        "first_reason": "Unreachable: max_strikes is 1, so the denial branch never runs. Filed for completeness; she does not ship forms with blanks.",
+        "second_reason": "Cited claim observed; receipts accepted and filed."
+      },
+
+      "state": {
+        "key": "evidence-pipeline-acknowledged",
+        "max_strikes": 1
+      }
+    }
+  ]
+}

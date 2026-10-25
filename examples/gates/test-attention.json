@@ -1,0 +1,37 @@
+// Example 2 — attention enforcement. Teaches: file_regex, tool filters,
+// and deny_once_then_warn used as an attention gate. She cannot read
+// intent — she can make you confirm it. The honest version of "don't
+// delete the tests": the first test-file edit each session is denied
+// with a question; the retry passes with a warning. Attention, enforced.
+{
+  "id": "test-attention",
+  "name": "Edits to test files get one hard look",
+  "description": "One hard stop per session on test-file edits — fixing the test passes; deleting it does not go unnoticed.",
+  "event": "PreToolUse",
+  // The top-level tool filter is exact-match OR any valid regex — she
+  // checks IDs at the door, and she accepts aliases spelled correctly.
+  "tool": "Edit|Write",
+  "priority": 70,
+  "enabled": true,
+  "tags": ["tests", "attention", "workflow-discipline"],
+
+  "match": {
+    "all": [
+      // file_regex and path_regex are the same matcher wearing different
+      // name tags — she documents both because runtimes can't agree on
+      // what to call a path. Test files live where they live.
+      { "type": "file_regex", "pattern": "(?i)(^|[\\\\/])(tests?|__tests__)[\\\\/]|[-_.](test|spec)\\.(rs|py|go|ts|js|java|rb)$" }
+    ]
+  },
+
+  "action": {
+    "type": "deny_once_then_warn",
+    "first_reason": "You're editing a test file. If you're fixing the test: proceed, and the retry will pass with a note. If you're deleting the test to make the bug go away: the bug is still there, and so is she.",
+    "second_reason": "Test edit noted. She's watching this file specifically now."
+  },
+
+  "state": {
+    "key": "test-attention",
+    "max_strikes": 2
+  }
+}

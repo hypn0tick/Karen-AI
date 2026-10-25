@@ -1,0 +1,27 @@
+// Example 1 — the classic. Teaches: command_regex, deny, priorities.
+// Copy me into your policies/gates/ and she will enforce me exactly as written.
+// The Karen who preserves history, because rewriting it is how you get caught.
+{
+  "id": "no-force-push-to-main",
+  "name": "No force-push to main",
+  "description": "Force-push to a protected branch is not a git technique, it's a confession.",
+  "event": "PreToolUse",
+  "tool": "Bash",
+  "priority": 90,
+  "enabled": true,
+  "tags": ["git", "safety", "workflow-discipline"],
+
+  "match": {
+    "all": [
+      // Both conditions must match the same command string — she reads
+      // the whole line, not just the exciting parts.
+      { "type": "command_regex", "pattern": "git\\s+push\\b.*(-f\\b|--force\\b)" },
+      { "type": "command_regex", "pattern": "\\b(main|master)\\b" }
+    ]
+  },
+
+  "action": {
+    "type": "deny",
+    "reason": "Force-push to main/master rewrites shared history. If the branch is broken, fix it forward; if it's protected, it's protected for a reason. The manager has been notified — by policy, not by you."
+  }
+}
