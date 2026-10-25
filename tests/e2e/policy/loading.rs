@@ -76,7 +76,6 @@ timeout_ms = 5000
 rules_dir = "rules"
 gates_dir = "gates"
 validate_on_load = true
-watch_for_changes = true
 
 [state]
 backend = "auto"
@@ -92,7 +91,11 @@ file_dir = "~/.cache/karen"
 #[test]
 #[serial]
 fn karen_verifies_hot_reload_picks_up_new_gate() {
-    // The Karen who verifies watch_for_changes picks up new gates.
+    // The Karen who proves the CLI reload story: every invocation is a
+    // fresh process, so a gate written between calls is law by the next
+    // one — no watcher required, no ceremony observed. (In-process
+    // embedders get the real thing: Engine::watch_policies, proven in
+    // the lib lane.)
     let env = TestEnv::new();
     // Add a new gate file
     let new_gate = r#"{
@@ -109,9 +112,6 @@ fn karen_verifies_hot_reload_picks_up_new_gate() {
 }"#;
     let gates_dir = env.policies_dir.join("gates");
     std::fs::write(gates_dir.join("hot-reload-test.json"), new_gate).unwrap();
-
-    // Give file watcher a moment
-    std::thread::sleep(std::time::Duration::from_millis(100));
 
     let (code, stdout, _stderr) = env.run_karen(&["validate", "--json"]);
     assert_exit_code(code, 0);
