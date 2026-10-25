@@ -1,0 +1,347 @@
+use std::io::Write;
+use std::process::Command;
+
+fn binary() -> String {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let binary_name = if cfg!(windows) { "karen.exe" } else { "karen" };
+    let path = std::path::Path::new(manifest_dir)
+        .join("target")
+        .join("release")
+        .join(binary_name);
+    path.to_string_lossy().to_string()
+}
+
+fn run_hook(input: &str, args: &[&str]) -> (i32, String, String) {
+    // The Karen who isolates her state: tests never write to the real
+    // ~/.cache/karen. Your permanent record is YOUR permanent record —
+    // she doesn't pad it with her rehearsals, and she rehearsed plenty.
+    let home = tempfile::tempdir().expect("temp home for hook state");
+    let mut cmd = Command::new(binary());
+    cmd.env("HOME", home.path());
+    cmd.arg("hook");
+    cmd.arg("--adapter");
+    cmd.arg("claude-classic");
+    cmd.args(args);
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn");
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(input.as_bytes()).expect("write stdin");
+    }
+    drop(child.stdin.take());
+
+    let out = child.wait_with_output().expect("wait failed");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    (out.status.code().unwrap_or(-1), stdout, stderr)
+}
+
+/// Validates that the hook protocol produces valid JSON envelope or {} on allow/fail-open
+#[test]
+fn hook_protocol_outputs_valid_json() {
+    let input = r#"{"hook_event_name":"PreToolUse","session_id":"test","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
+    let (code, stdout, _stderr) = run_hook(input, &[]);
+    assert_eq!(code, 0);
+    // Must be valid JSON (either {} or protocol object)
+    serde_json::from_str::<serde_json::Value>(&stdout).expect("valid JSON output");
+}
+
+/// Bad JSON input triggers fail-open (empty object)
+#[test]
+fn hook_bad_json_is_fail_open() {
+    let (code, stdout, _stderr) = run_hook("not json", &[]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout.trim(), "{}");
+}
+
+/// `SessionStart` with --part delivers rule chunks (structure test)
+#[test]
+fn hook_sessionstart_parts_emit_structured_output() {
+    let session_id = format!("test-parts-{}", std::process::id());
+    let input = format!(
+        r#"{{"hook_event_name":"SessionStart","session_id":"{session_id}","source":"startup"}}"#
+    );
+    for part in 1..=5 {
+        let (code, stdout, _stderr) = run_hook(&input, &["--part", &part.to_string()]);
+        assert_eq!(code, 0);
+        let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+        if part <= 4 {
+            // Parts 1-4 must have hookSpecificOutput with additionalContext
+            assert!(
+                out.get("hookSpecificOutput").is_some(),
+                "part {part} missing hookSpecificOutput: {stdout}"
+            );
+            assert_eq!(out["hookSpecificOutput"]["hookEventName"], "SessionStart");
+            assert!(
+                out["hookSpecificOutput"]["additionalContext"].is_string(),
+                "part {part} missing additionalContext"
+            );
+        } else {
+            // Part 5 (beyond packed count) emits empty object
+            assert_eq!(
+                out,
+                serde_json::json!({}),
+                "part {part} should be empty: {stdout}"
+            );
+        }
+    }
+}
+
+/// Part beyond count emits empty object
+#[test]
+fn hook_sessionstart_part_beyond_count_is_empty() {
+    let input =
+        r#"{"hook_event_name":"SessionStart","session_id":"test-parts","source":"startup"}"#;
+    let (code, stdout, _stderr) = run_hook(input, &["--part", "99"]);
+    assert_eq!(code, 0);
+    let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(out, serde_json::json!({}));
+}
+
+/// validate command reports policy health as JSON envelope
+#[test]
+fn validate_command_reports_policy_health() {
+    let mut cmd = Command::new(binary());
+    cmd.arg("validate");
+    cmd.arg("--json");
+    let output = cmd.output().expect("failed to run validate");
+    assert!(output.status.success());
+    let out: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid json");
+    assert_eq!(out["status"], "ok");
+    assert!(out["data"]["gate_count"].is_number());
+    assert!(out["data"]["rule_count"].is_number());
+}
+
+/// check command lists gates and rules in JSON
+#[test]
+fn check_command_lists_gates_and_rules() {
+    let mut cmd = Command::new(binary());
+    cmd.arg("check");
+    cmd.arg("--json");
+    let output = cmd.output().expect("failed to run check");
+    assert!(output.status.success());
+    let out: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid json");
+    assert_eq!(out["status"], "ok");
+    let gates = out["data"]["gates"].as_array().unwrap();
+    // Should have at least the 3 example gates
+    assert!(gates.len() >= 3);
+    for gate in gates {
+        assert!(gate["id"].is_string());
+        assert!(gate["event"].is_string());
+        assert!(gate["priority"].is_number());
+        assert!(gate["action"].is_string());
+    }
+}
+
+/// evaluate command performs dry-run and returns structured result
+#[test]
+fn evaluate_command_dry_runs() {
+    let input = r#"{"hook_event_name":"PreToolUse","session_id":"test-eval","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
+    let mut cmd = Command::new(binary());
+    cmd.arg("evaluate");
+    cmd.arg("--request");
+    cmd.arg("-");
+    cmd.arg("--json");
+    let mut child = cmd
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let out_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(out_json["status"], "ok");
+    assert!(out_json["data"]["action"].is_string());
+    assert_eq!(out_json["data"]["dry_run"], true);
+    assert!(out_json["data"]["injection_chars"].is_number());
+    assert!(out_json["data"]["fired_policies"].is_array());
+}
+
+/// schema command lists all commands and types
+#[test]
+fn schema_command_lists_commands() {
+    let mut cmd = Command::new(binary());
+    cmd.arg("schema");
+    cmd.arg("--json");
+    let output = cmd.output().expect("failed to run schema");
+    assert!(output.status.success());
+    let out: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+    assert_eq!(out["status"], "ok");
+    let commands: Vec<&str> = out["data"]["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert!(commands.contains(&"hook"));
+    assert!(commands.contains(&"validate"));
+    assert!(commands.contains(&"check"));
+    assert!(commands.contains(&"evaluate"));
+    assert!(commands.contains(&"schema"));
+    // Check types are present
+    assert!(out["data"]["types"]["events"].is_array());
+    assert!(out["data"]["types"]["conditions"].is_array());
+    assert!(out["data"]["types"]["actions"].is_array());
+    assert!(out["data"]["types"]["exit_codes"].is_object());
+}
+
+/// schema with topic filters to one command
+#[test]
+fn schema_with_topic_returns_filtered() {
+    let mut cmd = Command::new(binary());
+    cmd.arg("schema");
+    cmd.arg("hook");
+    cmd.arg("--json");
+    let output = cmd.output().expect("failed to run schema");
+    assert!(output.status.success());
+    let out: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+    assert_eq!(out["status"], "ok");
+    let commands = out["data"]["commands"].as_array().unwrap();
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0]["name"], "hook");
+}
+
+/// Unknown schema topic returns error with exit code 2
+#[test]
+fn unknown_schema_topic_returns_error() {
+    let mut cmd = Command::new(binary());
+    cmd.arg("schema");
+    cmd.arg("nonexistent");
+    let output = cmd.output().expect("failed to run schema");
+    assert!(!output.status.success());
+    assert_eq!(output.status.code().unwrap(), 2);
+}
+
+/// JSON field filtering works on validate output
+#[test]
+fn validate_json_fields_filter() {
+    let mut cmd = Command::new(binary());
+    cmd.arg("validate");
+    cmd.arg("--json");
+    cmd.arg("--fields");
+    cmd.arg("gate_count,rule_count");
+    let output = cmd.output().expect("failed to run validate");
+    assert!(output.status.success());
+    let out: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid json");
+    assert_eq!(out["status"], "ok");
+    let data = &out["data"];
+    // Only requested fields present
+    assert!(data.get("gate_count").is_some());
+    assert!(data.get("rule_count").is_some());
+    assert!(data.get("gates").is_none());
+    assert!(data.get("rules").is_none());
+}
+
+/// Unknown fields in --fields returns error
+#[test]
+fn validate_json_unknown_fields_errors() {
+    let mut cmd = Command::new(binary());
+    cmd.arg("validate");
+    cmd.arg("--json");
+    cmd.arg("--fields");
+    cmd.arg("nonexistent_field");
+    let output = cmd.output().expect("failed to run validate");
+    assert!(!output.status.success());
+    assert_eq!(output.status.code().unwrap(), 2);
+    let out: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid json");
+    assert_eq!(out["status"], "error");
+    assert_eq!(out["error"]["code"], "INVALID_FIELDS");
+}
+
+/// Missing policies directory returns exit 78
+#[test]
+fn missing_policies_returns_config_error() {
+    let bin = binary();
+    let mut cmd = Command::new(&bin);
+    cmd.arg("validate");
+    cmd.arg("--policies");
+    cmd.arg("/nonexistent/path");
+    cmd.arg("--json");
+    let output = cmd.output().expect("failed to run validate");
+    assert!(!output.status.success());
+    assert_eq!(output.status.code().unwrap(), 78);
+    let out: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid json");
+    assert_eq!(out["status"], "error");
+    assert_eq!(out["error"]["code"], "POLICY_NOT_FOUND");
+}
+
+/// Engine loads gates from YAML and rules from markdown
+#[test]
+fn engine_loads_gates_and_rules_from_files() {
+    let mut cmd = Command::new(binary());
+    cmd.arg("validate");
+    cmd.arg("--json");
+    let output = cmd.output().expect("failed to run validate");
+    assert!(output.status.success());
+    let out: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid json");
+    // Should have loaded the example gates and rules
+    assert!(out["data"]["gate_count"].as_u64().unwrap() >= 3);
+    assert!(out["data"]["rule_count"].as_u64().unwrap() >= 4);
+}
+
+/// Engine respects `fail_open` config (defaults to true)
+#[test]
+fn engine_fail_open_defaults_to_true() {
+    let mut cmd = Command::new(binary());
+    cmd.arg("validate");
+    cmd.arg("--json");
+    let output = cmd.output().expect("failed to run validate");
+    assert!(output.status.success());
+    let out: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).expect("valid json");
+    assert_eq!(out["data"]["config"]["fail_open"], true);
+}
+
+/// Hook protocol denies return permissionDecision: "deny" with reason
+#[test]
+fn hook_deny_returns_protocol_object() {
+    // This tests the PROTOCOL SHAPE, not a specific rule.
+    // We can't predict which rule fires, but we can verify the deny shape.
+    let input = r#"{"hook_event_name":"PreToolUse","session_id":"test-deny-shape","tool_name":"Bash","tool_input":{"command":"git commit -m \"x\""}}"#;
+    let (code, stdout, _stderr) = run_hook(input, &[]);
+    assert_eq!(code, 0);
+    let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    // If a gate fires (deny), output must be protocol object with hookSpecificOutput
+    if out.get("hookSpecificOutput").is_some() {
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(out["hookSpecificOutput"]["permissionDecisionReason"].is_string());
+    } else if out.get("systemMessage").is_some() {
+        // deny_once_then_warn first strike returns systemMessage
+        assert!(out["systemMessage"].is_string());
+    } else {
+        // Allow path: empty object
+        assert_eq!(out, serde_json::json!({}));
+    }
+}
+
+/// Hook allows returns {} (no stdout content beyond empty object)
+#[test]
+fn hook_allow_returns_empty_object() {
+    // Use a benign command that shouldn't match any gates
+    let input = r#"{"hook_event_name":"PreToolUse","session_id":"test-allow-shape","tool_name":"Bash","tool_input":{"command":"echo hello"}}"#;
+    let (code, stdout, _stderr) = run_hook(input, &[]);
+    assert_eq!(code, 0);
+    let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    // Allow path: empty object
+    assert_eq!(out, serde_json::json!({}));
+}

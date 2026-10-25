@@ -1,0 +1,48 @@
+[package]
+name = "karen-ai"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Karen-AI — Fast, policy-driven guardrails engine for AI coding runtimes"
+license-file = "LICENSE"
+repository = "https://github.com/hypn0tick/Karen-AI"
+homepage = "https://github.com/hypn0tick/Karen-AI"
+readme = "README.md"
+keywords = ["cli", "guardrails", "ai", "coding", "hooks"]
+categories = ["command-line-utilities", "development-tools"]
+authors = ["Hypn0tick"]
+
+# The published package carries the full name; the library and binary keep
+# the short one, so `use karen::…` and the `karen` CLI stay stable.
+# The Karen who keeps her name, and will remind you every chance she gets.
+[lib]
+name = "karen"
+
+[[bin]]
+name = "karen"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+json5 = "1"
+toml = "0.8"
+regex = "1"
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+dirs = "5"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+notify = "8"
+
+[dev-dependencies]
+tempfile = "3"
+serial_test = "3"
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
