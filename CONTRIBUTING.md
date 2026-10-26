@@ -92,7 +92,7 @@ The Karen who checks your boxes, then adds three more.
 - [ ] `cargo fmt --check` passes
 - [ ] `cargo clippy --all-targets -- -D warnings` passes (zero warnings)
 - [ ] `cargo build --release` ran (e2e and integration tests exec this binary)
-- [ ] `cargo test` passes (all 147 tests: 14 unit + 17 integration + 116 e2e, zero ignored)
+- [ ] `cargo test` passes (all 151 tests: 14 unit + 17 integration + 120 e2e, zero ignored)
 - [ ] New code has doc comments with Karen voice
 - [ ] Commit messages follow conventions (no AI attribution)
 - [ ] Comments use backticks for code identifiers
@@ -137,7 +137,7 @@ cargo test --test integration
 cargo test karen_verifies_deny_protocol_shape
 ```
 
-All 147 tests must pass (14 unit + 17 integration + 116 e2e — zero ignored). The Karen who counts, then counts again.
+All 151 tests must pass (14 unit + 17 integration + 120 e2e — zero ignored). The Karen who counts, then counts again.
 
 ---
 

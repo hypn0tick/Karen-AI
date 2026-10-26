@@ -7,15 +7,16 @@ use crate::e2e::common::{
 };
 use serial_test::serial;
 use std::fs;
+use std::process::Command;
 
 #[test]
 #[serial]
-fn karen_runtime_opencode_install_and_runtime_responds() {
-    // The Karen who checks the guest list first: no opencode CLI, no test,
-    // no drama. When it IS installed, she verifies the wiring lands exactly
-    // where OpenCode auto-discovers it.
-    if !runtime_available("opencode") {
-        eprintln!("skipping: opencode CLI not installed");
+fn karen_runtime_opencode_plugin_bridges_gates_and_rules() {
+    // The Karen who checks the plugin the way OpenCode will run it: loaded as
+    // a module, called through its hooks, talking to the real binary. A
+    // plugin that only exists on disk is a decoration, not a guardrail.
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
         return;
     }
     let env = TestEnv::new();
@@ -26,12 +27,74 @@ fn karen_runtime_opencode_install_and_runtime_responds() {
     let (code, stdout, _stderr) = run_command(install);
     assert_exit_code(code, 0);
     let data = assert_json_ok(&stdout);
-    let installed = data["installed"].as_array().unwrap();
-    assert_eq!(installed.len(), 1);
-    // The Karen who reads the wiring before she trusts it.
-    let hooks_path = project_dir.join(installed[0]["path"].as_str().unwrap());
-    let content = fs::read_to_string(&hooks_path).unwrap();
-    let hooks: serde_json::Value = serde_json::from_str(&content).unwrap();
-    let parts = hooks["hooks"]["SessionStart"].as_array().unwrap();
-    assert_eq!(parts.len(), 5, "SessionStart must register 5 parts");
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+
+    let script = env.temp_dir.path().join("drive-plugin.mjs");
+    fs::write(
+        &script,
+        format!(
+            r#"const {{ KarenAI }} = await import({plugin_url:?});
+const hooks = await KarenAI({{ directory: {dir:?} }});
+const result = {{}};
+async function before(command) {{
+  try {{
+    await hooks["tool.execute.before"]({{ tool: "bash", sessionID: "s1", callID: command }}, {{ args: {{ command }} }});
+    return "allowed";
+  }} catch (e) {{ return "denied: " + e.message; }}
+}}
+result.attributed = await before("git commit -m 'x' -m 'Co-Authored-By: Claude <noreply@anthropic.com>'");
+result.clean = await before("git status");
+const system = [];
+await hooks["experimental.chat.system.transform"]({{ sessionID: "s1" }}, {{ system }});
+await hooks["experimental.chat.system.transform"]({{ sessionID: "s1" }}, {{ system }});
+result.rules = system;
+const after = {{ title: "", output: "ok", metadata: {{}} }};
+await hooks["tool.execute.after"]({{ tool: "bash", sessionID: "s1", callID: "c9", args: {{ command: "git status" }} }}, after);
+result.after = after.output;
+console.log(JSON.stringify(result));
+"#,
+            dir = project_dir.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+
+    let attributed = result["attributed"].as_str().unwrap();
+    assert!(
+        attributed.starts_with("denied: Karen-AI:") && attributed.contains("attribution"),
+        "the commit-attribution gate must block through the plugin: {attributed}"
+    );
+    assert_eq!(result["clean"], "allowed");
+    let rules = result["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 2, "rules must ride along on every request");
+    assert!(
+        rules[0]
+            .as_str()
+            .unwrap()
+            .contains("Edit and Commit Core Rules")
+    );
+    assert_eq!(rules[0], rules[1]);
+    assert_eq!(result["after"], "ok", "a clean call gains no notices");
 }
