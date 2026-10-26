@@ -143,15 +143,24 @@ All 147 tests must pass (14 unit + 17 integration + 116 e2e — zero ignored). T
 
 ## Releases
 
-Releases are manual (the Karen who trusts nobody else with the big red button):
+Releases are manual (the Karen who trusts nobody else with the big red button), and the order is policy, not preference:
+
+1. **Push.**
+2. **Watch CI to green** — the full gauntlet, every job, no exceptions.
+3. **Then** `cargo publish`.
+
+A verification gate that runs after the irreversible step is not a gate; it's an autopsy. Filed after 0.1.1 shipped to crates.io before its proof arrived — the one time the order was wrong, nothing broke, and luck is not a control.
 
 ```bash
-# Update version in Cargo.toml
+# 1-2: push and watch CI to green, then:
+cargo publish
+
+# Tag for the GitHub release artifacts (after CI is green):
 git tag v0.x.y
 git push origin v0.x.y
 ```
 
-GitHub Actions will build and publish binaries.
+GitHub Actions will build and publish binaries for the tag.
 
 ---
 
