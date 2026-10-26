@@ -86,7 +86,7 @@ karen setup --project
 karen setup --dry-run
 ```
 
-The `setup` command installs `hooks.json` files that wire `karen hook` into each runtime's hook system. No manual editing of settings files required. She brought her own ladder. You're welcome.
+The `setup` command wires `karen hook` into each runtime where that runtime actually looks. Claude Code reads hooks only from its settings files, so she merges her entries into `settings.json`: everything that isn't hers stays put, an older copy of her entries is replaced rather than duplicated, and a `settings.json` that isn't valid JSON is refused, never overwritten. OpenCode runs no command hooks at all, so she installs a bridge plugin (`plugins/karen-ai.js`) that forwards tool calls and rule injection to the binary. Codex still gets its `hooks.json`. A stale `hooks.json` from an earlier `setup` is removed from the Claude and OpenCode directories, but only when every command in it is hers. She brought her own ladder, and she put the neighbours' ladders back. You're welcome.
 
 ---
 
@@ -273,7 +273,7 @@ The adapter includes the modification in the protocol response. Whether the runt
 └─────────────────────────────────────────────┘
 ```
 
-\*Install targets today — she writes their `hooks.json` in Classic dialect; native adapters live on the [ROADMAP](ROADMAP.md). The asterisk is doing the same work it does on a food label: honesty about what's inside.
+\*Codex: an install target speaking Classic through `hooks.json`. OpenCode: a bridge plugin speaking Classic to the engine (plugin API v1; blocking prompt gates are not bridged, since that API has no blocking prompt hook). Native adapters live on the [ROADMAP](ROADMAP.md). The asterisk is doing the same work it does on a food label: honesty about what's inside.
 
 New runtimes get an adapter. New rules get a file. Neither requires a meeting.
 
@@ -288,7 +288,7 @@ Hook adapters translate Karen's verdicts into each runtime's protocol. Currently
 | `claude`         | Claude Code (current)    | stays current                  |
 | `claude-classic` | Claude Code (classic protocol) | delivers verdicts only — your tools are safe, your agent is not |
 
-`setup` also accepts `codex` and `opencode` as install targets — it writes their `hooks.json` files using the Classic protocol. Native hook adapters for those runtimes are planned; until then, `--adapter` rejects them rather than guessing. The Karen who won't pretend to speak a language she hasn't learned.
+`setup` also accepts `codex` and `opencode` as install targets — Codex gets a `hooks.json`, OpenCode gets the `karen-ai.js` bridge plugin, both speaking the Classic protocol. Native hook adapters for those runtimes are planned; until then, `--adapter` rejects them rather than guessing. The Karen who won't pretend to speak a language she hasn't learned.
 
 ---
 
@@ -384,7 +384,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-147 tests passing (14 unit, 17 integration, 116 e2e — zero ignored). The Karen
+151 tests passing (14 unit, 17 integration, 120 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

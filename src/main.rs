@@ -8,7 +8,7 @@ use karen::types::{Action, AdapterType, EngineRequest, EngineResponse, Event, In
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const EXIT_OK: i32 = 0;
@@ -955,7 +955,7 @@ fn plan_setup_action(runtime: SetupRuntime, project: bool) -> SetupAction {
             (
                 global,
                 PathBuf::from(".claude"),
-                "hooks.json",
+                "settings.json",
                 claude_hooks_json(),
             )
         }
@@ -977,17 +977,22 @@ fn plan_setup_action(runtime: SetupRuntime, project: bool) -> SetupAction {
             (
                 global,
                 PathBuf::from(".opencode"),
-                "hooks.json",
-                opencode_hooks_json(),
+                "plugins/karen-ai.js",
+                OPENCODE_PLUGIN_JS.to_string(),
             )
         }
     };
 
     let target_dir = if project { project_dir } else { global_dir };
+    // Claude Code and OpenCode never read a hooks.json, so one written by an
+    // earlier `karen setup` is hers to clear. Codex keeps its hooks.json.
+    let legacy = (!matches!(runtime, SetupRuntime::Codex)).then(|| target_dir.join("hooks.json"));
     SetupAction {
         runtime: format!("{runtime:?}").to_lowercase(),
         scope: if project { "project" } else { "global" }.into(),
         path: target_dir.join(hook_file_name),
+        merge: matches!(runtime, SetupRuntime::Claude),
+        legacy,
         content: hook_content,
     }
 }
@@ -1002,6 +1007,7 @@ fn preview_setup(actions: &[SetupAction], out: &OutputArgs) -> i32 {
                 "scope": a.scope,
                 "path": a.path.display().to_string(),
                 "would_write": true,
+                "mode": if a.merge { "merge" } else { "replace" },
             })).collect::<Vec<_>>(),
         });
         return print_json(data, out);
@@ -1034,8 +1040,13 @@ fn install_setup_action(action: &SetupAction) -> Result<(), (i32, String)> {
             ));
         }
     }
+    let content = if action.merge {
+        merged_claude_settings(&action.path, &action.content)?
+    } else {
+        action.content.clone()
+    };
     let temp_path = action.path.with_extension("json.tmp");
-    if let Err(e) = fs::write(&temp_path, &action.content) {
+    if let Err(e) = fs::write(&temp_path, &content) {
         return Err((
             EXIT_CONFIG,
             format!("cannot write temp file {}: {e}", temp_path.display()),
@@ -1048,7 +1059,42 @@ fn install_setup_action(action: &SetupAction) -> Result<(), (i32, String)> {
             format!("cannot atomically install {}: {e}", action.path.display()),
         ));
     }
+    if let Some(legacy) = action
+        .legacy
+        .as_deref()
+        .filter(|p| is_karen_legacy_hooks(p))
+    {
+        if let Err(e) = fs::remove_file(legacy) {
+            return Err((
+                EXIT_CONFIG,
+                format!("cannot remove stale {}: {e}", legacy.display()),
+            ));
+        }
+    }
     Ok(())
+}
+
+/// A `hooks.json` is hers only if every command in it is a `karen hook`.
+/// Anyone else's file stays put, however dead — she clears her own desk,
+/// not the neighbours'.
+fn is_karen_legacy_hooks(path: &Path) -> bool {
+    let Some(doc) = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    else {
+        return false;
+    };
+    let entries: Vec<&Value> = doc
+        .get("hooks")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|events| events.values())
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(|group| group.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .collect();
+    !entries.is_empty() && entries.iter().all(|entry| is_karen_hook(entry))
 }
 
 /// Report what was installed — quietly if asked, loudly by default. The
@@ -1090,8 +1136,166 @@ struct SetupAction {
     runtime: String,
     scope: String,
     path: PathBuf,
+    merge: bool,
+    legacy: Option<PathBuf>,
     content: String,
 }
+
+/// Claude Code reads hooks only from its settings files (or a plugin's
+/// hooks/hooks.json), so she moves in rather than leaving a note on the
+/// porch. Everything that isn't hers stays exactly where it was; her own
+/// previous entries — stale ones included — are cleared out first, because
+/// a duplicate Karen is the one thing Karen cannot abide. Unreadable JSON is
+/// refused, never overwritten: she does not "fix" other people's files.
+fn merged_claude_settings(path: &Path, karen_registration: &str) -> Result<String, (i32, String)> {
+    let mut settings = match fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str::<Value>(&text).map_err(|e| {
+            (
+                EXIT_CONFIG,
+                format!(
+                    "{} is not valid JSON ({e}); refusing to overwrite it",
+                    path.display()
+                ),
+            )
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err((EXIT_CONFIG, format!("cannot read {}: {e}", path.display()))),
+    };
+    let not_object = |what: &str| {
+        (
+            EXIT_CONFIG,
+            format!(
+                "{what} in {} is not a JSON object; refusing to overwrite it",
+                path.display()
+            ),
+        )
+    };
+    let karen_hooks = serde_json::from_str::<Value>(karen_registration)
+        .ok()
+        .and_then(|v| v.get("hooks").cloned())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+
+    let root = settings
+        .as_object_mut()
+        .ok_or_else(|| not_object("the top level"))?;
+    let hooks = root
+        .entry("hooks")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| not_object("`hooks`"))?;
+
+    let mut emptied = Vec::new();
+    for (event, groups) in hooks.iter_mut() {
+        let Some(groups) = groups.as_array_mut() else {
+            continue;
+        };
+        let before = groups.len();
+        for group in groups.iter_mut() {
+            if let Some(entries) = group.get_mut("hooks").and_then(Value::as_array_mut) {
+                entries.retain(|entry| !is_karen_hook(entry));
+            }
+        }
+        groups.retain(|group| {
+            group
+                .get("hooks")
+                .and_then(Value::as_array)
+                .is_none_or(|entries| !entries.is_empty())
+        });
+        if groups.is_empty() && before > 0 {
+            emptied.push(event.clone());
+        }
+    }
+    for event in emptied {
+        hooks.remove(&event);
+    }
+
+    for (event, groups) in karen_hooks {
+        let slot = hooks.entry(event).or_insert_with(|| json!([]));
+        if let (Some(slot), Some(groups)) = (slot.as_array_mut(), groups.as_array()) {
+            slot.extend(groups.iter().cloned());
+        }
+    }
+
+    serde_json::to_string_pretty(&settings)
+        .map(|s| s + "\n")
+        .map_err(|e| (EXIT_CONFIG, format!("cannot serialize settings: {e}")))
+}
+
+/// Her signature: a command that runs `karen hook` (or `karen.exe hook`),
+/// by bare name or by path.
+fn is_karen_hook(entry: &Value) -> bool {
+    static SIGNATURE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?:^|[\s"'/\\])karen(?:\.exe)?["']?\s+hook\b"#)
+            .expect("the signature regex is a literal and compiles")
+    });
+    entry
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|command| SIGNATURE.is_match(command))
+}
+
+/// `OpenCode` runs no command hooks — only JS/TS plugins (plugin API v1:
+/// `tool.execute.before` throws to block, `tool.execute.after` amends the
+/// output, `experimental.chat.system.transform` carries the rules). So she
+/// ships a bridge that speaks Claude Classic to the engine and plugin to the
+/// runtime. The Karen who learned the local customs and kept her own rules.
+const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API v1). Installed by `karen setup opencode`.
+// OpenCode has no command hooks, so this plugin forwards events to `karen hook`
+// in the Claude Classic dialect. KAREN_BIN overrides the binary (default: karen on PATH).
+import { spawnSync } from "node:child_process";
+
+const KAREN = process.env.KAREN_BIN || "karen";
+const TOOL_NAMES = { list: "LS", webfetch: "WebFetch", todowrite: "TodoWrite", todoread: "TodoRead", multiedit: "MultiEdit" };
+const toolName = (tool) => TOOL_NAMES[tool] ?? (tool ? tool[0].toUpperCase() + tool.slice(1) : tool);
+
+function karen(payload, part) {
+  const args = ["hook", "--adapter", "claude-classic"];
+  if (part) args.push("--part", String(part));
+  const run = spawnSync(KAREN, args, { input: JSON.stringify(payload), encoding: "utf8", timeout: 10000, windowsHide: true });
+  if (run.error || run.status !== 0) return {};
+  try { return JSON.parse(run.stdout || "{}"); } catch { return {}; }
+}
+
+export const KarenAI = async ({ directory }) => {
+  const rules = new Map();
+  const notices = new Map();
+  return {
+    "experimental.chat.system.transform": async (input, output) => {
+      const sid = input.sessionID ?? "unknown";
+      if (!rules.has(sid)) {
+        const parts = [];
+        for (let part = 1; part <= 64; part++) {
+          const out = karen({ hook_event_name: "SessionStart", session_id: `opencode-rules:${process.pid}:${sid}`, cwd: directory }, part);
+          const context = out?.hookSpecificOutput?.additionalContext;
+          if (!context) break;
+          parts.push(context);
+        }
+        rules.set(sid, parts.join("\n\n"));
+      }
+      if (rules.get(sid)) output.system.push(rules.get(sid));
+    },
+    "tool.execute.before": async (input, output) => {
+      const out = karen({ hook_event_name: "PreToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: output.args });
+      if (out.modifiedInput && typeof out.modifiedInput === "object") {
+        Object.assign(output.args, out.modifiedInput);
+      } else {
+        const decision = out.hookSpecificOutput?.permissionDecision;
+        const reason = out.hookSpecificOutput?.permissionDecisionReason ?? "blocked by policy";
+        if (decision === "deny") throw new Error(`Karen-AI: ${reason}`);
+        if (decision === "ask") throw new Error(`Karen-AI: needs human approval, and OpenCode plugins cannot ask: ${reason}`);
+      }
+      if (out.systemMessage) notices.set(input.callID, out.systemMessage);
+    },
+    "tool.execute.after": async (input, output) => {
+      const out = karen({ hook_event_name: "PostToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: input.args, tool_response: output.output });
+      const notes = [notices.get(input.callID), out.decision === "block" ? out.reason : null, out.systemMessage].filter(Boolean);
+      notices.delete(input.callID);
+      if (notes.length) output.output = `${output.output ?? ""}\n\n[Karen-AI] ${notes.join("\n")}`;
+    },
+  };
+};
+"#;
 
 fn claude_hooks_json() -> String {
     let karen = if cfg!(windows) { "karen.exe" } else { "karen" };
@@ -1142,47 +1346,6 @@ fn codex_hooks_json() -> String {
     format!(
         "{{
   \"_comment\": \"Codex hook registration for Karen-AI. Rule injection (karen hook --part N) and gate enforcement (karen hook) both use the Rust binary, which evaluates JSON/JSONC/JSON5 gates. This file is installed by `karen setup codex` — no manual editing of Codex config required. Codex auto-discovers hooks from .codex-plugin/plugin.json.\",
-  \"hooks\": {{
-    \"SessionStart\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 1\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 2\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 3\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 4\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 5\", \"timeout\": 10}}] }}
-    ],
-    \"UserPromptSubmit\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
-    ],
-    \"PreToolUse\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
-    ],
-    \"PostToolUse\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
-    ],
-    \"Stop\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
-    ],
-    \"PreCompact\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
-    ],
-    \"PostCompact\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
-    ],
-    \"SubagentStart\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
-    ],
-    \"SubagentStop\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
-    ]
-  }}
-}}")
-}
-
-fn opencode_hooks_json() -> String {
-    let karen = if cfg!(windows) { "karen.exe" } else { "karen" };
-    format!(
-        "{{
-  \"_comment\": \"OpenCode hook registration for Karen-AI. Rule injection (karen hook --part N) and gate enforcement (karen hook) both use the Rust binary, which evaluates JSON/JSONC/JSON5 gates. This file is installed by `karen setup opencode` — OpenCode auto-discovers hooks from .opencode/hooks.json.\",
   \"hooks\": {{
     \"SessionStart\": [
       {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 1\", \"timeout\": 10}}] }},

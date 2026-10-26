@@ -34,7 +34,7 @@ Every deep finding her process produces routes to the same repair: widen the bor
 
 ## Native adapters — Codex and OpenCode
 
-Both runtimes are supported today as install targets speaking the Classic protocol. Native adapters are planned so she can speak their own dialects instead of Classic-at-a-distance. **Status:** planned.
+Both runtimes are supported today speaking the Classic protocol: Codex through its `hooks.json`, and OpenCode through a bridge plugin (`plugins/karen-ai.js`, plugin API v1), because OpenCode runs no command hooks. Native adapters are planned so she can speak their own dialects instead of Classic-at-a-distance. Plugin API v2 (`Plugin.define` / `ctx.tool.hook`) needs its own bridge when OpenCode 2 ships, and blocking prompt gates need a runtime hook OpenCode v1 does not offer. **Status:** planned; OpenCode bridge shipped.
 
 ## Starter gate pack
 
