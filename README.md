@@ -176,8 +176,8 @@ The Karen who decides. Four answers: `allow`, `deny`, `ask`, `modify`. No `maybe
 | `prompt_regex`      | Regex against user prompt            | listens to you       |
 | `content_regex`     | Regex against tool input content     | reads the payload    |
 | `tool_regex`        | Regex against tool name              | knows the tool       |
-| `field_equals`      | Exact match on `tool_input.<field>`, else the top-level payload field (Stop's `stop_hook_active`) | demands precision    |
-| `field_regex`       | Regex against the same field, strings only (Stop's `last_assistant_message`) | reads your closing statement |
+| `field_equals`      | Exact match on `tool_input.<field>`, else the top-level payload field (Stop's `stop_hook_active`); `.` walks nested keys (`tool_response.stdout`) | demands precision    |
+| `field_regex`       | Regex against the same field, strings only (Stop's `last_assistant_message`, PostToolUse's `tool_response.stdout`) | reads your closing statement |
 | `always`            | Matches everything                   | doesn't miss a thing |
 
 ### Actions

@@ -277,6 +277,15 @@ impl Matcher {
     }
 }
 
+/// `tool_input.<path>`, else the top-level payload `<path>`; `.` separates nested keys.
+fn lookup<'a>(req: &'a crate::types::EngineRequest, path: &str) -> Option<&'a serde_json::Value> {
+    let walk = |root: &'a serde_json::Value| path.split('.').try_fold(root, |v, k| v.get(k));
+    req.tool_input
+        .as_ref()
+        .and_then(walk)
+        .or_else(|| walk(&req.raw))
+}
+
 impl Condition {
     fn matches(&self, req: &crate::types::EngineRequest) -> bool {
         match self {
@@ -302,20 +311,15 @@ impl Condition {
             // tool_input first; payloads without the field fall back to the
             // top-level hook fields (Stop's `stop_hook_active`, `agent_type`,
             // ...). The Karen who checks the drawer, then the desk it sits in.
-            Self::FieldEquals(field, value) => req
-                .tool_input
-                .as_ref()
-                .and_then(|i| i.get(field))
-                .or_else(|| req.raw.get(field))
-                .is_some_and(|actual| actual == value),
+            // A dotted path (`tool_response.stdout`) walks nested objects.
+            Self::FieldEquals(field, value) => {
+                lookup(req, field).is_some_and(|actual| actual == value)
+            }
             // Same lookup, a pattern instead of an exact value: string fields
             // only. Stop's `last_assistant_message` is the obvious customer —
-            // she reads the closing statement before she lets you leave.
-            Self::FieldRegex(field, re) => req
-                .tool_input
-                .as_ref()
-                .and_then(|i| i.get(field))
-                .or_else(|| req.raw.get(field))
+            // she reads the closing statement before she lets you leave; and
+            // PostToolUse's `tool_response.stdout`, what you just showed everyone.
+            Self::FieldRegex(field, re) => lookup(req, field)
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|s| re.is_match(s)),
             Self::Always => true,
