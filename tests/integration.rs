@@ -40,6 +40,11 @@ fn fixture_policies() -> tempfile::TempDir {
         r#"{ "id": "fixture-closing-check", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "always" } ], "none": [ { "type": "field_equals", "field": "stop_hook_active", "value": true } ] }, "action": { "type": "deny", "reason": "Fixture gate: closing check before you stop." } }"#,
     )
     .expect("gate");
+    std::fs::write(
+        gates.join("open-question.json"),
+        r#"{ "id": "fixture-open-question", "event": "SubagentStop", "priority": 45, "match": { "all": [ { "type": "always" } ], "none": [ { "type": "field_regex", "field": "last_assistant_message", "pattern": "\\[Q-7\\]" } ] }, "action": { "type": "deny", "reason": "Fixture gate: re-ask open question Q-7." } }"#,
+    )
+    .expect("gate");
     let rules = root.join("rules");
     std::fs::create_dir_all(&rules).expect("rules dir");
     for n in 1..=4 {
@@ -410,6 +415,30 @@ fn stop_gate_reads_stop_hook_active() {
         out,
         serde_json::json!({}),
         "the continuation must be allowed to stop: {stdout}"
+    );
+}
+
+/// `field_regex` reads the top-level `last_assistant_message`: a stop gate
+/// holds the turn open until the closing statement carries the required text.
+#[test]
+fn stop_gate_reads_last_assistant_message() {
+    let missing = r#"{"hook_event_name":"SubagentStop","session_id":"test-q","stop_hook_active":true,"last_assistant_message":"All done."}"#;
+    let (code, stdout, _) = run_hook(missing, &[]);
+    assert_eq!(code, 0);
+    let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        out["decision"], "block",
+        "a closing message without [Q-7] must be blocked: {stdout}"
+    );
+
+    let asked = r#"{"hook_event_name":"SubagentStop","session_id":"test-q","stop_hook_active":true,"last_assistant_message":"[Q-7] Approve the pipeline? Context, options, recommendation."}"#;
+    let (code, stdout, _) = run_hook(asked, &[]);
+    assert_eq!(code, 0);
+    let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "the re-asked question must let the turn end: {stdout}"
     );
 }
 
