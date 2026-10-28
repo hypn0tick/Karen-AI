@@ -45,6 +45,11 @@ fn fixture_policies() -> tempfile::TempDir {
         r#"{ "id": "fixture-open-question", "event": "SubagentStop", "priority": 45, "match": { "all": [ { "type": "always" } ], "none": [ { "type": "field_regex", "field": "last_assistant_message", "pattern": "\\[Q-7\\]" } ] }, "action": { "type": "deny", "reason": "Fixture gate: re-ask open question Q-7." } }"#,
     )
     .expect("gate");
+    std::fs::write(
+        gates.join("leaked-key.json"),
+        r#"{ "id": "fixture-leaked-key", "event": "PostToolUse", "priority": 45, "match": { "any": [ { "type": "field_regex", "field": "tool_response.stdout", "pattern": "apikey=[0-9a-f]{32}" } ] }, "action": { "type": "deny", "reason": "Fixture gate: a key reached the transcript." } }"#,
+    )
+    .expect("gate");
     let rules = root.join("rules");
     std::fs::create_dir_all(&rules).expect("rules dir");
     for n in 1..=4 {
@@ -439,6 +444,30 @@ fn stop_gate_reads_last_assistant_message() {
         out,
         serde_json::json!({}),
         "the re-asked question must let the turn end: {stdout}"
+    );
+}
+
+/// `field_regex` walks a dotted path: a `PostToolUse` gate reads
+/// `tool_response.stdout` and blocks when a key-shaped string was printed.
+#[test]
+fn post_tool_gate_reads_nested_tool_response() {
+    let leaked = r#"{"hook_event_name":"PostToolUse","session_id":"test-leak","tool_name":"Bash","tool_input":{"command":"x"},"tool_response":{"stdout":"url http://127.0.0.1:8080/mcp?apikey=0123456789abcdef0123456789abcdef","stderr":""}}"#;
+    let (code, stdout, _) = run_hook(leaked, &[]);
+    assert_eq!(code, 0);
+    let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        out["decision"], "block",
+        "a key in tool_response.stdout must be blocked: {stdout}"
+    );
+
+    let clean = r#"{"hook_event_name":"PostToolUse","session_id":"test-leak","tool_name":"Bash","tool_input":{"command":"x"},"tool_response":{"stdout":"mcp servers: qmd, rea","stderr":""}}"#;
+    let (code, stdout, _) = run_hook(clean, &[]);
+    assert_eq!(code, 0);
+    let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "clean output must pass: {stdout}"
     );
 }
 
