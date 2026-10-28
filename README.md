@@ -176,7 +176,7 @@ The Karen who decides. Four answers: `allow`, `deny`, `ask`, `modify`. No `maybe
 | `prompt_regex`      | Regex against user prompt            | listens to you       |
 | `content_regex`     | Regex against tool input content     | reads the payload    |
 | `tool_regex`        | Regex against tool name              | knows the tool       |
-| `field_equals`      | Exact match on a payload field       | demands precision    |
+| `field_equals`      | Exact match on `tool_input.<field>`, else the top-level payload field (Stop's `stop_hook_active`) | demands precision    |
 | `always`            | Matches everything                   | doesn't miss a thing |
 
 ### Actions

@@ -35,6 +35,11 @@ fn fixture_policies() -> tempfile::TempDir {
         r#"{ "id": "fixture-head-rewrite", "event": "PreToolUse", "priority": 40, "match": { "all": [ { "type": "command_regex", "pattern": "^head\\s+-n?\\s*\\d+" } ] }, "action": { "type": "modify", "reason": "Fixture gate: rewriting head to Select-Object for portability.", "modifier": "head-to-select-object" } }"#,
     )
     .expect("gate");
+    std::fs::write(
+        gates.join("closing-check.json"),
+        r#"{ "id": "fixture-closing-check", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "always" } ], "none": [ { "type": "field_equals", "field": "stop_hook_active", "value": true } ] }, "action": { "type": "deny", "reason": "Fixture gate: closing check before you stop." } }"#,
+    )
+    .expect("gate");
     let rules = root.join("rules");
     std::fs::create_dir_all(&rules).expect("rules dir");
     for n in 1..=4 {
@@ -381,6 +386,30 @@ fn hook_deny_returns_protocol_object() {
     assert!(
         out["hookSpecificOutput"]["permissionDecisionReason"].is_string(),
         "a deny without a reason is just a mood: {stdout}"
+    );
+}
+
+/// `field_equals` falls back to top-level payload fields: a Stop gate blocks the
+/// first stop of every turn and lets the continuation stop, so it never loops.
+#[test]
+fn stop_gate_reads_stop_hook_active() {
+    let first = r#"{"hook_event_name":"Stop","session_id":"test-stop","stop_hook_active":false}"#;
+    let (code, stdout, _) = run_hook(first, &[]);
+    assert_eq!(code, 0);
+    let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        out["decision"], "block",
+        "first stop must be blocked: {stdout}"
+    );
+
+    let again = r#"{"hook_event_name":"Stop","session_id":"test-stop","stop_hook_active":true}"#;
+    let (code, stdout, _) = run_hook(again, &[]);
+    assert_eq!(code, 0);
+    let out: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "the continuation must be allowed to stop: {stdout}"
     );
 }
 
