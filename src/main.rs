@@ -853,7 +853,7 @@ fn schema_json(topic: Option<&str>) -> Result<Value, String> {
             "adapters": ["claude", "claude-classic"],
             "conditions": [
                 "command_regex", "command_contains", "file_regex", "path_regex",
-                "prompt_regex", "content_regex", "tool_regex", "field_equals", "always"
+                "prompt_regex", "content_regex", "tool_regex", "field_equals", "field_regex", "always"
             ],
             "actions": ["allow", "deny", "ask", "modify", "deny_once_then_warn"],
             "exit_codes": {"0": "success", "2": "usage or invalid input", "3": "not found", "78": "invalid policies"},

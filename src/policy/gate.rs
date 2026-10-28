@@ -84,6 +84,10 @@ pub enum ConditionDef {
         field: String,
         value: serde_json::Value,
     },
+    FieldRegex {
+        field: String,
+        pattern: String,
+    },
     Always,
 }
 
@@ -161,6 +165,7 @@ enum Condition {
     ContentRegex(Regex),
     ToolRegex(Regex),
     FieldEquals(String, serde_json::Value),
+    FieldRegex(String, Regex),
     Always,
 }
 
@@ -206,6 +211,9 @@ impl Gate {
                 ConditionDef::ContentRegex { pattern } => Condition::ContentRegex(re(&pattern)?),
                 ConditionDef::ToolRegex { pattern } => Condition::ToolRegex(re(&pattern)?),
                 ConditionDef::FieldEquals { field, value } => Condition::FieldEquals(field, value),
+                ConditionDef::FieldRegex { field, pattern } => {
+                    Condition::FieldRegex(field, re(&pattern)?)
+                }
                 ConditionDef::Always => Condition::Always,
             })
         };
@@ -300,6 +308,16 @@ impl Condition {
                 .and_then(|i| i.get(field))
                 .or_else(|| req.raw.get(field))
                 .is_some_and(|actual| actual == value),
+            // Same lookup, a pattern instead of an exact value: string fields
+            // only. Stop's `last_assistant_message` is the obvious customer —
+            // she reads the closing statement before she lets you leave.
+            Self::FieldRegex(field, re) => req
+                .tool_input
+                .as_ref()
+                .and_then(|i| i.get(field))
+                .or_else(|| req.raw.get(field))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|s| re.is_match(s)),
             Self::Always => true,
         }
     }
