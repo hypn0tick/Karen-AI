@@ -291,10 +291,14 @@ impl Condition {
                     .any(|s| re.is_match(s))
             }
             Self::ToolRegex(re) => req.tool_name.as_deref().is_some_and(|t| re.is_match(t)),
+            // tool_input first; payloads without the field fall back to the
+            // top-level hook fields (Stop's `stop_hook_active`, `agent_type`,
+            // ...). The Karen who checks the drawer, then the desk it sits in.
             Self::FieldEquals(field, value) => req
                 .tool_input
                 .as_ref()
                 .and_then(|i| i.get(field))
+                .or_else(|| req.raw.get(field))
                 .is_some_and(|actual| actual == value),
             Self::Always => true,
         }
