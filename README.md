@@ -86,7 +86,7 @@ karen setup --project
 karen setup --dry-run
 ```
 
-The `setup` command wires `karen hook` into each runtime where that runtime actually looks. Claude Code reads hooks only from its settings files, so she merges her entries into `settings.json`: everything that isn't hers stays put, an older copy of her entries is replaced rather than duplicated, and a `settings.json` that isn't valid JSON is refused, never overwritten. OpenCode runs no command hooks at all, so she installs a bridge plugin (`plugins/karen-ai.js`) that forwards tool calls and rule injection to the binary. Codex still gets its `hooks.json`. A stale `hooks.json` from an earlier `setup` is removed from the Claude and OpenCode directories, but only when every command in it is hers. She brought her own ladder, and she put the neighbours' ladders back. You're welcome.
+The `setup` command wires `karen hook` into each runtime where that runtime actually looks. Claude Code reads hooks only from its settings files, so she merges her entries into `settings.json`: everything that isn't hers stays put, an older copy of her entries is replaced rather than duplicated, and a `settings.json` that isn't valid JSON is refused, never overwritten. OpenCode runs no command hooks at all, so she installs a bridge plugin (`plugins/karen-ai.js`) that forwards tool calls and rule injection to the binary, and reviews every idle session as a Stop: when a Stop gate blocks, the reason goes back into the session as a prompt and the turn continues. A child session (one with a parent, from the task tool) is reviewed as a SubagentStop. A lane started in its own terminal is a top-level session, so it gets Stop too; scope gates to roles with conditions such as `cwd`. The plugin reads the policy root from `KAREN_POLICIES` in OpenCode's environment. Codex still gets its `hooks.json`. A stale `hooks.json` from an earlier `setup` is removed from the Claude and OpenCode directories, but only when every command in it is hers. She brought her own ladder, and she put the neighbours' ladders back. You're welcome.
 
 ---
 
@@ -274,7 +274,7 @@ The adapter includes the modification in the protocol response. Whether the runt
 └─────────────────────────────────────────────┘
 ```
 
-\*Codex: an install target speaking Classic through `hooks.json`. OpenCode: a bridge plugin speaking Classic to the engine (plugin API v1; blocking prompt gates are not bridged, since that API has no blocking prompt hook). Native adapters live on the [ROADMAP](ROADMAP.md). The asterisk is doing the same work it does on a food label: honesty about what's inside.
+\*Codex: an install target speaking Classic through `hooks.json`. OpenCode: a bridge plugin speaking Classic to the engine (plugin API v1; Stop and SubagentStop come from session-idle events; blocking prompt gates are not bridged, since that API has no blocking prompt hook, and `ask` acts as `deny` because a plugin cannot ask). Native adapters live on the [ROADMAP](ROADMAP.md). The asterisk is doing the same work it does on a food label: honesty about what's inside.
 
 New runtimes get an adapter. New rules get a file. Neither requires a meeting.
 
