@@ -850,6 +850,25 @@ mod tests {
     }
 
     #[test]
+    fn the_layer_doc_names_exactly_the_built_in_gates() {
+        let doc = include_str!("../../docs/layered-roots.md");
+        let row = doc
+            .lines()
+            .find(|l| l.starts_with("| Built-in |"))
+            .expect("built-in row");
+        let mut named: Vec<&str> = row.split('`').filter(|s| s.starts_with("karen-")).collect();
+        let mut shipped: Vec<String> = builtin_layer()
+            .unwrap()
+            .gates
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        named.sort_unstable();
+        shipped.sort_unstable();
+        assert_eq!(named, shipped);
+    }
+
+    #[test]
     fn git_config_value_reads_the_last_karen_policies() {
         let config = "[core]\n\tpolicies = no\n[karen]\n\tpolicies = first\n[Karen]\n\tPolicies = \"C:/a b/p\" # note\n";
         assert_eq!(

@@ -6,7 +6,7 @@ Karen merges three policy layers on every call, in a fixed order: built-in, user
 
 | Layer | Found at | Holds |
 |---|---|---|
-| Built-in | Compiled into the binary | Gates no reasonable user objects to: no force-push to a default branch, no secrets in commands. Policy roots stay editable by agents, so rules can be improved while sessions run; a project that wants its root locked adds that gate itself |
+| Built-in | Compiled into the binary | Gates no reasonable user objects to: no force-push to a default branch (`karen-no-force-push-default-branch`), no secrets in commands (`karen-no-secrets-in-commands`). Policy roots stay editable by agents, so rules can be improved while sessions run; a project that wants its root locked adds that gate itself |
 | User | `<Karen home>/policies` | The user's own rules, in every project |
 | Project | `--policies` or `KAREN_POLICIES` if set, else the nearest `.karen/policies` from the working directory up to the repository root, else the repository's `karen.policies` git setting | Rules specific to one project |
 
