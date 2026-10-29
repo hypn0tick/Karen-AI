@@ -9,7 +9,7 @@
 [![Policy](https://img.shields.io/badge/policy-JSON%2FJSONC%2FJSON5-brightgreen)]()
 [![Manager](https://img.shields.io/badge/manager-contacted-red)]()
 
-> The "Karen" you'll invite to every party. This one enforces YOUR policy in under half a millisecond (source: her own stopwatch, which has never once been wrong).
+> The "Karen" you'll invite to every party. This one judges a call against YOUR policy in under a millisecond, but a hook starts her fresh each time, so the honest stopwatch reads about 60 ms per call on Windows with 54 gates, most of it spent reading and compiling the policy (source: hyperfine, which she checked twice).
 
 Karen-AI is a guardrails engine for AI coding agents. She watches every tool call your agent makes, reads the JSON you gave her, and says "no" before the harness even blinks.
 
