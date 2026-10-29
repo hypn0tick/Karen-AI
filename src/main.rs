@@ -1273,7 +1273,7 @@ export const KarenAI = async ({ directory, client }) => {
   const rules = new Map();
   const notices = new Map();
   const reviewed = new Map(); // session -> last assistant message id already reviewed
-  const held = new Set(); // sessions whose previous stop Karen blocked
+  const holds = new Map(); // session -> stops Karen has held in a row
   const plans = new Map(); // session -> todo list signature at its last review
   const offDuty = new Set(); // sessions already told that no policy is enforced
   // A missing policy root fails open; each session hears it once, not on every call.
@@ -1312,14 +1312,14 @@ export const KarenAI = async ({ directory, client }) => {
           };
         }
       } catch {}
-      const out = karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: held.has(sid), last_assistant_message: last.text, ...todo, ...(parent ? { agent_id: sid } : {}) });
+      const out = karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: holds.has(sid), stop_hold_count: holds.get(sid) ?? 0, last_assistant_message: last.text, ...todo, ...(parent ? { agent_id: sid } : {}) });
       if (out.decision !== "block") {
-        held.delete(sid);
+        holds.delete(sid);
         const offline = notice(sid, out.systemMessage);
         if (offline) client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${offline}` }] } }).catch(() => {});
         return;
       }
-      held.add(sid);
+      holds.set(sid, (holds.get(sid) ?? 0) + 1);
       // Not awaited: the prompt resolves only after the model replies, and the event loop must not wait for it.
       client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${out.reason ?? "blocked by policy"}` }] } }).catch(() => {});
     },

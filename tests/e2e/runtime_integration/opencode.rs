@@ -300,6 +300,91 @@ console.log(JSON.stringify({{ counts, prompts }}));
 
 #[test]
 #[serial]
+fn karen_runtime_opencode_stop_payload_counts_consecutive_holds() {
+    // The Karen who asks more than once but knows when to stop asking: a
+    // gate exempting every continuation can be outwaited with one more
+    // announcement, so the payload counts the holds in a row and a gate can
+    // insist twice before it lets go. The count resets when a stop passes.
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::new();
+    fs::write(
+        env.policies_dir.join("gates").join("oc-holds.json"),
+        r#"{ "gates": [
+  { "id": "oc-status", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "always" } ], "none": [ { "type": "field_regex", "field": "last_assistant_message", "pattern": "(?m)^(DONE|WAITING|BLOCKED):" }, { "type": "field_equals", "field": "stop_hold_count", "value": 2 } ] }, "action": { "type": "deny", "reason": "status line" } }
+] }"#,
+    )
+    .unwrap();
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+
+    let script = env.temp_dir.path().join("drive-holds.mjs");
+    fs::write(
+        &script,
+        format!(
+            r#"const {{ KarenAI }} = await import({plugin_url:?});
+const prompts = [];
+const history = [];
+const client = {{ session: {{
+  messages: async ({{ path }}) => ({{ data: history }}),
+  get: async ({{ path }}) => ({{ data: {{ id: path.id }} }}),
+  prompt: async ({{ path, body }}) => {{ prompts.push(body.parts.map((p) => p.text).join("")); return {{ data: {{}} }}; }},
+}} }};
+const hooks = await KarenAI({{ directory: {dir:?}, client }});
+const say = (id, text) => history.push({{ info: {{ id, role: "assistant" }}, parts: [{{ type: "text", text }}] }});
+const idle = () => hooks.event({{ event: {{ type: "session.idle", properties: {{ sessionID: "s1" }} }} }});
+const counts = [];
+for (const [id, text] of [["m1", "Standing by."], ["m2", "Arming the monitor."], ["m3", "Closing out."], ["m4", "Waiting quietly."], ["m5", "WAITING: on lora."]]) {{
+  say(id, text); await idle(); counts.push(prompts.length);
+}}
+console.log(JSON.stringify({{ counts }}));
+"#,
+            dir = project_dir.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    // m1 and m2 are held (counts 0 and 1); m3 arrives with two holds in a row
+    // and passes, resetting the count; m4 is held again; m5 has a status line.
+    assert_eq!(
+        result["counts"],
+        serde_json::json!([1, 2, 2, 3, 3]),
+        "{result}"
+    );
+}
+
+#[test]
+#[serial]
 fn karen_runtime_opencode_stop_payload_carries_todo_state() {
     // The Karen who reads your checklist, not just your closing remarks: an
     // agent can word its way past a text gate, but its own todo list is a
