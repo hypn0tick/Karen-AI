@@ -5,6 +5,7 @@
 
 pub mod adapters;
 pub mod engine;
+pub mod home;
 pub mod policy;
 pub mod state;
 pub mod types;

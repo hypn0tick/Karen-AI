@@ -3,8 +3,10 @@
 
 use crate::e2e::common::fixtures::{DEFAULT_CONFIG, GateFixture};
 use crate::e2e::common::{
-    TestEnv, assert_exit_code, assert_json_error, assert_json_ok, assert_policy_health,
+    TestEnv, assert_evaluate_action, assert_exit_code, assert_json_error, assert_json_ok,
+    assert_policy_health,
 };
+use serde_json::json;
 use serial_test::serial;
 
 #[test]
@@ -121,6 +123,48 @@ fn karen_verifies_hot_reload_picks_up_new_gate() {
         gates.iter().any(|g| g["id"] == "hot-reload-test"),
         "hot reload must pick up new gate"
     );
+}
+
+#[test]
+#[serial]
+fn karen_hot_reloads_an_edited_gate_past_the_validation_cache() {
+    // Regexes compile lazily and a clean validation is remembered per version
+    // of the policy files. Remembering must never freeze the law: an edited
+    // gate is law by the next call, and an edit that breaks a pattern is
+    // caught on the next call even though the previous version validated.
+    let gate = |pattern: &str| {
+        format!(
+            r#"{{ "id": "edited", "event": "PreToolUse", "tool": "Bash", "match": {{ "all": [ {{ "type": "command_regex", "pattern": "{pattern}" }} ] }}, "action": {{ "type": "deny", "reason": "edited gate" }} }}"#
+        )
+    };
+    let env = TestEnv::with_config(DEFAULT_CONFIG, &[], &[]);
+    let path = env.policies_dir.join("gates").join("edited.json");
+    let decide = |command: &str| {
+        let input = json!({ "hook_event_name": "PreToolUse", "session_id": "hot", "tool_name": "Bash", "tool_input": { "command": command } }).to_string();
+        let (code, stdout, _stderr) = env.run_evaluate_stdin(&input, &["--json"]);
+        assert_exit_code(code, 0);
+        assert_json_ok(&stdout)
+    };
+
+    std::fs::write(&path, gate("alpha")).unwrap();
+    assert_evaluate_action(&decide("echo alpha"), "deny");
+    let cache = env.home_dir.join(".karen").join("cache");
+    assert!(
+        std::fs::read_dir(&cache)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("validated-")),
+        "a clean validation leaves its marker in ~/.karen/cache"
+    );
+
+    std::fs::write(&path, gate("beta")).unwrap();
+    assert_evaluate_action(&decide("echo alpha"), "allow");
+    assert_evaluate_action(&decide("echo beta"), "deny");
+
+    std::fs::write(&path, gate("[invalid")).unwrap();
+    let (code, stdout, _stderr) = env.run_karen(&["validate", "--json"]);
+    assert_exit_code(code, 78);
+    assert_json_error(&stdout, "POLICY_INVALID");
 }
 
 #[test]

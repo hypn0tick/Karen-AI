@@ -336,6 +336,16 @@ fn run_validate(args: ValidateArgs, verbose: bool) -> i32 {
         Ok(set) => set,
         Err(code) => return code,
     };
+    // An explicit validation never trusts the remembered one: every pattern compiles now.
+    if let Err(error) = set.gates.iter().try_for_each(karen::policy::Gate::validate) {
+        return fail(
+            &args.out,
+            "POLICY_INVALID",
+            &error.to_string(),
+            "Run `karen validate` after fixing the reported file.",
+            EXIT_CONFIG,
+        );
+    }
 
     let data = policy_json(&set);
     if args.out.wants_json() {

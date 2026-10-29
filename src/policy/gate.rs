@@ -4,6 +4,7 @@ use crate::types::Event;
 use regex::Regex;
 use serde::Deserialize;
 use std::fmt;
+use std::sync::OnceLock;
 
 /// Raw gate as written in your gate file. The Karen who reads your drafts, has notes, and is still looking for any excuse to call your manager.
 ///
@@ -150,7 +151,40 @@ const fn default_max_strikes() -> u32 {
     2
 }
 
-/// A gate with compiled regexes, ready to evaluate. The Karen who does her reading before the meeting, and expects the same of you.
+/// A regex compiled on first use. Compiling every pattern of every gate cost
+/// about 55 ms per hook call with 63 gates, almost all of a call; most calls
+/// evaluate a handful. [`Gate::validate`] compiles them all when the policy
+/// files change. The Karen who reads the clause when it applies to you.
+#[derive(Debug, Clone)]
+struct LazyRegex {
+    pattern: String,
+    compiled: OnceLock<Option<Regex>>,
+}
+
+impl LazyRegex {
+    fn new(pattern: String) -> Self {
+        Self {
+            pattern,
+            compiled: OnceLock::new(),
+        }
+    }
+
+    /// An invalid pattern never matches; validation reports it.
+    fn is_match(&self, text: &str) -> bool {
+        self.compiled
+            .get_or_init(|| Regex::new(&self.pattern).ok())
+            .as_ref()
+            .is_some_and(|re| re.is_match(text))
+    }
+
+    fn validate(&self) -> Result<(), regex::Error> {
+        let re = Regex::new(&self.pattern)?;
+        let _ = self.compiled.set(Some(re));
+        Ok(())
+    }
+}
+
+/// A gate ready to evaluate; its regexes compile on first use. The Karen who does her reading before the meeting, and expects the same of you.
 #[derive(Debug, Clone)]
 pub struct Gate {
     pub id: String,
@@ -164,6 +198,7 @@ pub struct Gate {
     pub matcher: Matcher,
     pub action: ActionDef,
     pub state: Option<StateSpec>,
+    tool_regex: Option<LazyRegex>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -175,18 +210,37 @@ pub struct Matcher {
 
 #[derive(Debug, Clone)]
 enum Condition {
-    CommandRegex(Regex),
+    CommandRegex(LazyRegex),
     CommandContains(String),
-    FileRegex(Regex),
-    PathRegex(Regex),
-    PromptRegex(Regex),
-    ContentRegex(Regex),
-    ToolRegex(Regex),
+    FileRegex(LazyRegex),
+    PathRegex(LazyRegex),
+    PromptRegex(LazyRegex),
+    ContentRegex(LazyRegex),
+    ToolRegex(LazyRegex),
     FieldEquals(String, serde_json::Value),
-    FieldRegex(String, Regex),
-    FieldJsonRegex(String, Regex),
+    FieldRegex(String, LazyRegex),
+    FieldJsonRegex(String, LazyRegex),
     FileOlderThan(String, u64),
     Always,
+}
+
+impl Condition {
+    fn regex(&self) -> Option<&LazyRegex> {
+        match self {
+            Self::CommandRegex(re)
+            | Self::FileRegex(re)
+            | Self::PathRegex(re)
+            | Self::PromptRegex(re)
+            | Self::ContentRegex(re)
+            | Self::ToolRegex(re)
+            | Self::FieldRegex(_, re)
+            | Self::FieldJsonRegex(_, re) => Some(re),
+            Self::CommandContains(_)
+            | Self::FieldEquals(..)
+            | Self::FileOlderThan(..)
+            | Self::Always => None,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -202,67 +256,48 @@ pub enum CompileError {
 }
 
 impl Gate {
-    /// Compile a gate definition: validate the event and pre-compile every
-    /// regex, so evaluation never pays the compile cost twice. The Karen
-    /// who does the work once and bills you forever.
+    /// Build a gate from its definition and check its event. Regexes compile on
+    /// first use; [`Gate::validate`] compiles every one of them.
     ///
     /// # Errors
     ///
     /// Returns [`CompileError::UnknownEvent`] when the gate names an event
-    /// she does not recognize, and [`CompileError::Regex`] when one of its
-    /// match patterns is not a valid regex.
+    /// she does not recognize.
     pub fn compile(def: GateDef) -> Result<Self, CompileError> {
         validate_event(&def.event)
             .map_err(|()| CompileError::UnknownEvent(def.event.clone(), def.id.clone()))?;
 
-        let compile = |c: ConditionDef| -> Result<Condition, CompileError> {
-            let re = |pattern: &str| {
-                Regex::new(pattern).map_err(|source| CompileError::Regex {
-                    gate: def.id.clone(),
-                    source,
-                })
-            };
-            Ok(match c {
-                ConditionDef::CommandRegex { pattern } => Condition::CommandRegex(re(&pattern)?),
-                ConditionDef::CommandContains { value } => Condition::CommandContains(value),
-                ConditionDef::FileRegex { pattern } => Condition::FileRegex(re(&pattern)?),
-                ConditionDef::PathRegex { pattern } => Condition::PathRegex(re(&pattern)?),
-                ConditionDef::PromptRegex { pattern } => Condition::PromptRegex(re(&pattern)?),
-                ConditionDef::ContentRegex { pattern } => Condition::ContentRegex(re(&pattern)?),
-                ConditionDef::ToolRegex { pattern } => Condition::ToolRegex(re(&pattern)?),
-                ConditionDef::FieldEquals { field, value } => Condition::FieldEquals(field, value),
-                ConditionDef::FieldRegex { field, pattern } => {
-                    Condition::FieldRegex(field, re(&pattern)?)
-                }
-                ConditionDef::FieldJsonRegex { field, pattern } => {
-                    Condition::FieldJsonRegex(field, re(&pattern)?)
-                }
-                ConditionDef::FileOlderThan { path, seconds } => {
-                    Condition::FileOlderThan(path, seconds)
-                }
-                ConditionDef::Always => Condition::Always,
-            })
+        let condition = |c: ConditionDef| match c {
+            ConditionDef::CommandRegex { pattern } => {
+                Condition::CommandRegex(LazyRegex::new(pattern))
+            }
+            ConditionDef::CommandContains { value } => Condition::CommandContains(value),
+            ConditionDef::FileRegex { pattern } => Condition::FileRegex(LazyRegex::new(pattern)),
+            ConditionDef::PathRegex { pattern } => Condition::PathRegex(LazyRegex::new(pattern)),
+            ConditionDef::PromptRegex { pattern } => {
+                Condition::PromptRegex(LazyRegex::new(pattern))
+            }
+            ConditionDef::ContentRegex { pattern } => {
+                Condition::ContentRegex(LazyRegex::new(pattern))
+            }
+            ConditionDef::ToolRegex { pattern } => Condition::ToolRegex(LazyRegex::new(pattern)),
+            ConditionDef::FieldEquals { field, value } => Condition::FieldEquals(field, value),
+            ConditionDef::FieldRegex { field, pattern } => {
+                Condition::FieldRegex(field, LazyRegex::new(pattern))
+            }
+            ConditionDef::FieldJsonRegex { field, pattern } => {
+                Condition::FieldJsonRegex(field, LazyRegex::new(pattern))
+            }
+            ConditionDef::FileOlderThan { path, seconds } => {
+                Condition::FileOlderThan(path, seconds)
+            }
+            ConditionDef::Always => Condition::Always,
         };
 
         let matcher = Matcher {
-            all: def
-                .r#match
-                .all
-                .into_iter()
-                .map(&compile)
-                .collect::<Result<_, _>>()?,
-            any: def
-                .r#match
-                .any
-                .into_iter()
-                .map(&compile)
-                .collect::<Result<_, _>>()?,
-            none: def
-                .r#match
-                .none
-                .into_iter()
-                .map(&compile)
-                .collect::<Result<_, _>>()?,
+            all: def.r#match.all.into_iter().map(condition).collect(),
+            any: def.r#match.any.into_iter().map(condition).collect(),
+            none: def.r#match.none.into_iter().map(condition).collect(),
         };
 
         Ok(Self {
@@ -270,6 +305,7 @@ impl Gate {
             name: def.name,
             description: def.description,
             event: def.event,
+            tool_regex: def.tool.clone().map(LazyRegex::new),
             tool: def.tool,
             priority: def.priority,
             enabled: def.enabled,
@@ -280,6 +316,24 @@ impl Gate {
         })
     }
 
+    /// Compile every match pattern now. A `tool` filter that is not a regex
+    /// still works as an exact tool name, so it is not checked here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompileError::Regex`] for the first match pattern that is not
+    /// a valid regex.
+    pub fn validate(&self) -> Result<(), CompileError> {
+        self.matcher
+            .conditions()
+            .filter_map(Condition::regex)
+            .try_for_each(LazyRegex::validate)
+            .map_err(|source| CompileError::Regex {
+                gate: self.id.clone(),
+                source,
+            })
+    }
+
     #[must_use]
     pub fn applies_to(&self, event: &Event, tool: Option<&str>) -> bool {
         self.enabled
@@ -287,33 +341,37 @@ impl Gate {
             && self.tool.as_deref().is_none_or(|t| {
                 tool.is_some_and(|actual| {
                     actual.eq_ignore_ascii_case(t)
-                        || regex::Regex::new(t).is_ok_and(|re| re.is_match(actual))
+                        || self
+                            .tool_regex
+                            .as_ref()
+                            .is_some_and(|re| re.is_match(actual))
                 })
             })
     }
 }
 
 impl Matcher {
-    /// Every payload field a `field_equals`, `field_regex` or `field_json_regex` condition reads.
-    pub fn fields(&self) -> impl Iterator<Item = &str> {
-        self.all
-            .iter()
-            .chain(&self.any)
-            .chain(&self.none)
-            .filter_map(|c| match c {
-                Condition::FieldEquals(field, _)
-                | Condition::FieldRegex(field, _)
-                | Condition::FieldJsonRegex(field, _) => Some(field.as_str()),
-                _ => None,
-            })
+    fn conditions(&self) -> impl Iterator<Item = &Condition> {
+        self.all.iter().chain(&self.any).chain(&self.none)
     }
 
+    /// Every payload field a `field_equals`, `field_regex` or `field_json_regex` condition reads.
+    pub fn fields(&self) -> impl Iterator<Item = &str> {
+        self.conditions().filter_map(|c| match c {
+            Condition::FieldEquals(field, _)
+            | Condition::FieldRegex(field, _)
+            | Condition::FieldJsonRegex(field, _) => Some(field.as_str()),
+            _ => None,
+        })
+    }
+
+    /// Short-circuits: `any` and `none` are read only while `all` holds, so a
+    /// gate that cannot match compiles nothing past its first failed condition.
     #[must_use]
     pub fn matches(&self, req: &crate::types::EngineRequest) -> bool {
-        let all_ok = self.all.iter().all(|c| c.matches(req));
-        let any_ok = self.any.is_empty() || self.any.iter().any(|c| c.matches(req));
-        let none_ok = !self.none.iter().any(|c| c.matches(req));
-        all_ok && any_ok && none_ok
+        self.all.iter().all(|c| c.matches(req))
+            && (self.any.is_empty() || self.any.iter().any(|c| c.matches(req)))
+            && !self.none.iter().any(|c| c.matches(req))
     }
 }
 
@@ -382,13 +440,8 @@ impl Condition {
 }
 
 fn file_older_than(path: &str, cwd: Option<&str>, seconds: u64) -> bool {
-    let resolved = if let Some(rest) = path.strip_prefix("~/") {
-        std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map_or_else(
-                || std::path::PathBuf::from(path),
-                |h| std::path::PathBuf::from(h).join(rest),
-            )
+    let resolved = if path.starts_with("~/") {
+        crate::home::expand(path)
     } else {
         let p = std::path::PathBuf::from(path);
         match cwd {

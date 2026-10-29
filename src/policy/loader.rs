@@ -278,6 +278,9 @@ pub fn load(root: &Path) -> Result<PolicySet, LoadError> {
     let config = load_config(root)?;
     let gates = load_gates(&root.join(&config.policy.gates_dir))?;
     let rules = load_rules(&root.join(&config.policy.rules_dir))?;
+    if config.policy.validate_on_load {
+        validate_once(root, &gates)?;
+    }
 
     Ok(PolicySet {
         gates,
@@ -285,6 +288,83 @@ pub fn load(root: &Path) -> Result<PolicySet, LoadError> {
         config,
         root: root.to_path_buf(),
     })
+}
+
+/// Compile every gate's patterns once per version of the policy files. A
+/// marker named by the root and a fingerprint of its files (path, size,
+/// modification time) records a clean validation, so an unchanged policy skips
+/// the work; any edit, addition or removal changes the fingerprint and
+/// validates again. Without a usable cache directory she validates every time.
+fn validate_once(root: &Path, gates: &[Gate]) -> Result<(), LoadError> {
+    let marker = fingerprint(root).map(|(root_id, files_id)| {
+        (
+            format!("validated-{root_id:016x}-"),
+            crate::home::cache_dir().join(format!("validated-{root_id:016x}-{files_id:016x}")),
+        )
+    });
+    if marker.as_ref().is_some_and(|(_, path)| path.is_file()) {
+        return Ok(());
+    }
+    for gate in gates {
+        gate.validate().map_err(Box::new)?;
+    }
+    if let Some((prefix, path)) = marker {
+        record_validation(&prefix, &path);
+    }
+    Ok(())
+}
+
+/// Write the marker and drop older markers of the same root. Best effort: a
+/// cache she cannot write only costs the next call a validation.
+fn record_validation(prefix: &str, path: &Path) {
+    let Some(dir) = path.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let _ = std::fs::write(path, env!("CARGO_PKG_VERSION"));
+}
+
+/// A hash of the root's path, and a hash of every file under it with its size
+/// and modification time plus Karen's version.
+fn fingerprint(root: &Path) -> Option<(u64, u64)> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let root = root.canonicalize().ok()?;
+    let mut files = Vec::new();
+    walk_files(&root, &mut files).ok()?;
+    files.sort();
+    let mut root_hash = DefaultHasher::new();
+    root.hash(&mut root_hash);
+    let mut files_hash = DefaultHasher::new();
+    env!("CARGO_PKG_VERSION").hash(&mut files_hash);
+    for path in files {
+        let meta = std::fs::metadata(&path).ok()?;
+        let modified = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        (path, meta.len(), modified.as_nanos()).hash(&mut files_hash);
+    }
+    Some((root_hash.finish(), files_hash.finish()))
+}
+
+fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            walk_files(&path, out)?;
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn load_config(root: &Path) -> Result<Config, LoadError> {
