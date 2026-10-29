@@ -1249,8 +1249,17 @@ const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API 
 // OpenCode has no command hooks, so this plugin forwards events to `karen hook`
 // in the Claude Classic dialect. KAREN_BIN overrides the binary (default: karen on PATH).
 import { spawnSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const KAREN = process.env.KAREN_BIN || "karen";
+// Every failure below fails open, so each one leaves a line here (KAREN_LOG overrides the path):
+// a stop that was not held can then be explained from evidence instead of guessed.
+const LOG = process.env.KAREN_LOG || join(tmpdir(), "karen-opencode.log");
+const fail = (stage, sid, detail) => {
+  try { appendFileSync(LOG, `${new Date().toISOString()} pid=${process.pid} session=${sid ?? "-"} ${stage}: ${String(detail?.message ?? detail ?? "").trim().slice(0, 500)}\n`); } catch {}
+};
 const TOOL_NAMES = { list: "LS", webfetch: "WebFetch", todowrite: "TodoWrite", todoread: "TodoRead", multiedit: "MultiEdit" };
 const toolName = (tool) => TOOL_NAMES[tool] ?? (tool ? tool[0].toUpperCase() + tool.slice(1) : tool);
 
@@ -1258,8 +1267,10 @@ function karen(payload, part) {
   const args = ["hook", "--adapter", "claude-classic"];
   if (part) args.push("--part", String(part));
   const run = spawnSync(KAREN, args, { input: JSON.stringify(payload), encoding: "utf8", timeout: 10000, windowsHide: true });
-  if (run.error || run.status !== 0) return {};
-  try { return JSON.parse(run.stdout || "{}"); } catch { return {}; }
+  const sid = payload.session_id;
+  if (run.error) { fail(`spawn ${KAREN} on ${payload.hook_event_name}`, sid, run.error); return {}; }
+  if (run.status !== 0) { fail(`exit ${run.status} on ${payload.hook_event_name}`, sid, run.stderr || "(no stderr)"); return {}; }
+  try { return JSON.parse(run.stdout || "{}"); } catch (e) { fail(`unreadable output on ${payload.hook_event_name}`, sid, e); return {}; }
 }
 
 // OpenCode has no Stop hook: an idle session is reviewed as a Stop, and a block is
@@ -1289,7 +1300,7 @@ export const KarenAI = async ({ directory, client }) => {
       const sid = event?.properties?.sessionID;
       if (!idle || !sid || !client?.session) return;
       let last = null;
-      try { last = lastAssistant((await client.session.messages({ path: { id: sid } }))?.data); } catch { return; }
+      try { last = lastAssistant((await client.session.messages({ path: { id: sid } }))?.data); } catch (e) { fail("session.messages on idle", sid, e); return; }
       if (!last || reviewed.get(sid) === last.id) return;
       reviewed.set(sid, last.id);
       // An inline child (task tool) has a parentID and stops as a subagent, as in Claude Code. A lane started
@@ -1316,12 +1327,12 @@ export const KarenAI = async ({ directory, client }) => {
       if (out.decision !== "block") {
         holds.delete(sid);
         const offline = notice(sid, out.systemMessage);
-        if (offline) client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${offline}` }] } }).catch(() => {});
+        if (offline) client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${offline}` }] } }).catch((e) => fail("session.prompt (notice)", sid, e));
         return;
       }
       holds.set(sid, (holds.get(sid) ?? 0) + 1);
       // Not awaited: the prompt resolves only after the model replies, and the event loop must not wait for it.
-      client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${out.reason ?? "blocked by policy"}` }] } }).catch(() => {});
+      client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${out.reason ?? "blocked by policy"}` }] } }).catch((e) => fail("session.prompt (hold not delivered)", sid, e));
     },
     "experimental.chat.system.transform": async (input, output) => {
       const sid = input.sessionID ?? "unknown";

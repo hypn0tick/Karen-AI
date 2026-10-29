@@ -484,3 +484,95 @@ console.log(JSON.stringify({{ counts, prompts }}));
         "{result}"
     );
 }
+
+#[test]
+#[serial]
+fn karen_runtime_opencode_plugin_logs_every_open_failure() {
+    // The Karen who keeps a diary of the times she could not stand guard:
+    // every failure still lets the session through, but each one leaves a
+    // line in her log, so an unheld stop is explained from evidence.
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::new();
+    fs::write(
+        env.policies_dir.join("gates").join("oc-always.json"),
+        r#"{ "gates": [
+  { "id": "oc-always", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "status line" } }
+] }"#,
+    )
+    .unwrap();
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+
+    let script = env.temp_dir.path().join("drive-failures.mjs");
+    fs::write(
+        &script,
+        format!(
+            r#"const {{ KarenAI }} = await import({plugin_url:?});
+const history = [{{ info: {{ id: "m1", role: "assistant" }}, parts: [{{ type: "text", text: "Standing by." }}] }}];
+const client = {{ session: {{
+  messages: async ({{ path }}) => {{ if (path.id === "broken") throw new Error("store offline"); return {{ data: history }}; }},
+  get: async ({{ path }}) => ({{ data: {{ id: path.id }} }}),
+  prompt: async () => {{ throw new Error("session busy"); }},
+}} }};
+const hooks = await KarenAI({{ directory: {dir:?}, client }});
+await hooks.event({{ event: {{ type: "session.idle", properties: {{ sessionID: "s1" }} }} }});
+await hooks.event({{ event: {{ type: "session.idle", properties: {{ sessionID: "broken" }} }} }});
+await hooks["tool.execute.before"]({{ tool: "bash", sessionID: "s1", callID: "c1" }}, {{ args: {{ command: "git status" }} }});
+await new Promise((r) => setTimeout(r, 100));
+"#,
+            dir = project_dir.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let run = |bin: &std::path::Path, log: &std::path::Path| {
+        let output = Command::new("node")
+            .arg(&script)
+            .env("HOME", &env.home_dir)
+            .env("KAREN_POLICIES", &env.policies_dir)
+            .env("KAREN_BIN", bin)
+            .env("KAREN_LOG", log)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "node driver failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::read_to_string(log).unwrap_or_default()
+    };
+
+    let held = run(&env.karen_binary, &env.temp_dir.path().join("held.log"));
+    assert!(
+        held.contains("session=s1 session.prompt (hold not delivered): session busy"),
+        "{held}"
+    );
+    assert!(
+        held.contains("session=broken session.messages on idle: store offline"),
+        "{held}"
+    );
+
+    let missing = env.temp_dir.path().join("no-karen.exe");
+    let offline = run(&missing, &env.temp_dir.path().join("offline.log"));
+    assert!(
+        offline.contains("session=s1 spawn") && offline.contains("on PreToolUse"),
+        "{offline}"
+    );
+}
