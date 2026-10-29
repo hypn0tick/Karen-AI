@@ -88,7 +88,7 @@ karen setup --project
 karen setup --dry-run
 ```
 
-The `setup` command wires `karen hook` into each runtime where that runtime actually looks. Claude Code reads hooks only from its settings files, so she merges her entries into `settings.json`: everything that isn't hers stays put, an older copy of her entries is replaced rather than duplicated, and a `settings.json` that isn't valid JSON is refused, never overwritten. OpenCode runs no command hooks at all, so she installs a bridge plugin (`plugins/karen-ai.js`) that forwards tool calls and rule injection to the binary, and reviews every idle session as a Stop: when a Stop gate blocks, the reason goes back into the session as a prompt and the turn continues. A child session (one with a parent, from the task tool) is reviewed as a SubagentStop. A lane started in its own terminal is a top-level session, so it gets Stop too; scope gates to roles with conditions such as `cwd`. Each OpenCode Stop also carries the session's todo list (`open_todos`, `todo_count`, `todos_updated`) and `stop_hold_count`, the number of stops Karen has held in a row, reset when one passes: a gate with `none: [{"type": "field_equals", "field": "stop_hold_count", "value": 2}]` insists twice and then lets go, instead of exempting every continuation. The plugin reads the policy root from `KAREN_POLICIES` in OpenCode's environment. Codex still gets its `hooks.json`. A stale `hooks.json` from an earlier `setup` is removed from the Claude and OpenCode directories, but only when every command in it is hers. She brought her own ladder, and she put the neighbours' ladders back. You're welcome.
+The `setup` command wires `karen hook` into each runtime where that runtime actually looks. Claude Code reads hooks only from its settings files, so she merges her entries into `settings.json`: everything that isn't hers stays put, an older copy of her entries is replaced rather than duplicated, and a `settings.json` that isn't valid JSON is refused, never overwritten. OpenCode runs no command hooks at all, so she installs a bridge plugin (`plugins/karen-ai.js`) that forwards tool calls and rule injection to the binary, and reviews every idle session as a Stop: when a Stop gate blocks, the reason goes back into the session as a prompt and the turn continues. A child session (one with a parent, from the task tool) is reviewed as a SubagentStop. A lane started in its own terminal is a top-level session, so it gets Stop too; scope gates to roles with conditions such as `cwd`. Each OpenCode Stop also carries the session's todo list (`open_todos`, `todo_count`, `todos_updated`) and `stop_hold_count`, the number of stops Karen has held in a row, reset when one passes: a gate with `none: [{"type": "field_equals", "field": "stop_hold_count", "value": 2}]` insists twice and then lets go, instead of exempting every continuation. The plugin passes the session's directory, and Karen finds the layers from it (`KAREN_POLICIES` in OpenCode's environment still overrides). Codex still gets its `hooks.json`. A stale `hooks.json` from an earlier `setup` is removed from the Claude and OpenCode directories, but only when every command in it is hers. She brought her own ladder, and she put the neighbours' ladders back. You're welcome.
 
 ---
 
@@ -135,6 +135,17 @@ policies/
 ```
 
 (Skill routing and tool redirection directories are planned, not implemented — the loader reads `rules/` and `gates/` only. The Karen who refuses to document furniture that hasn't been delivered.)
+
+A rule reaches every runtime unless it opens with a front matter block naming the runtimes it is for, as the `runtime` fact names them (`claude`, `codex`, `opencode`):
+
+```markdown
+---
+runtimes: [claude, codex]
+---
+# Rules about Claude Code's own subagent hooks
+```
+
+The block is not injected, and any key other than `runtimes` fails `karen validate`. A rule only one runtime can follow costs every other runtime nothing.
 
 She loads three layers on every call and merges them by gate id:
 

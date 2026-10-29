@@ -36,10 +36,7 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
-    let runtime = facts
-        .get("runtime")
-        .and_then(Value::as_str)
-        .map_or_else(|| detect_runtime(&req.raw), str::to_string);
+    let runtime = runtime(&req.raw);
     for name in wanted {
         if facts.contains_key(&name) {
             continue;
@@ -71,6 +68,16 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
 
 fn join(names: BTreeSet<String>) -> String {
     names.into_iter().collect::<Vec<_>>().join(",")
+}
+
+/// The runtime a payload came from: the `facts.runtime` its bridge supplied
+/// (the `OpenCode` plugin says `opencode`), else [`detect_runtime`].
+#[must_use]
+pub fn runtime(raw: &Value) -> String {
+    raw.get("facts")
+        .and_then(|f| f.get("runtime"))
+        .and_then(Value::as_str)
+        .map_or_else(|| detect_runtime(raw), str::to_string)
 }
 
 /// The runtime, from what its payload carries: Claude Code and Codex name their

@@ -731,6 +731,7 @@ fn policy_json(set: &PolicySet) -> Value {
                     "id": rule.id,
                     "path": rule.path.display().to_string(),
                     "chars": rule.content.chars().count(),
+                    "runtimes": rule.runtimes,
                 })
             })
             .collect::<Vec<_>>(),

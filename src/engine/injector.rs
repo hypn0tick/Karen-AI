@@ -26,8 +26,9 @@ pub fn rule_injection(
     session: &str,
     force: bool,
     part: Option<usize>,
+    runtime: Option<&str>,
 ) -> Option<Injection> {
-    if policies.rules.is_empty() {
+    if !policies.rules.iter().any(|r| r.applies_to(runtime)) {
         return None;
     }
 
@@ -36,7 +37,7 @@ pub fn rule_injection(
         return None;
     }
 
-    let parts = rule_parts(policies);
+    let parts = rule_parts(policies, runtime);
     let content = match part {
         Some(1..) => parts.get(part? - 1)?.clone(),
         Some(0) => return None,
@@ -55,11 +56,11 @@ pub fn rule_injection(
 
 /// Pack rules into chunks below [`CHUNK_LIMIT`], preferring rule boundaries. The Karen who packs it tight, like a suitcase she intends to inspect.
 #[must_use]
-pub fn rule_parts(policies: &PolicySet) -> Vec<String> {
+pub fn rule_parts(policies: &PolicySet, runtime: Option<&str>) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
     let mut current = String::new();
 
-    for rule in &policies.rules {
+    for rule in policies.rules.iter().filter(|r| r.applies_to(runtime)) {
         let text = rule.content.trim_end();
         if text.is_empty() {
             continue;
@@ -132,6 +133,7 @@ mod tests {
                     id: format!("rule-{i}"),
                     path: PathBuf::from(format!("rule-{i}.md")),
                     content: (*content).to_string(),
+                    runtimes: Vec::new(),
                 })
                 .collect(),
             config: Config::default(),
@@ -146,7 +148,7 @@ mod tests {
     #[test]
     fn small_rule_set_is_one_part() {
         let set = policies(&["alpha", "beta"]);
-        let parts = rule_parts(&set);
+        let parts = rule_parts(&set, None);
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0], "alpha\n\n---\n\nbeta");
     }
@@ -156,7 +158,7 @@ mod tests {
         let rule_a = "a".repeat(5_000);
         let rule_b = "b".repeat(5_000);
         let set = policies(&[&rule_a, &rule_b]);
-        let parts = rule_parts(&set);
+        let parts = rule_parts(&set, None);
         assert_eq!(parts.len(), 2);
         assert!(parts.iter().all(|p| p.len() <= CHUNK_LIMIT));
     }
@@ -165,7 +167,7 @@ mod tests {
     fn oversized_rule_is_split_on_char_boundaries() {
         let rule = "é".repeat(6_000);
         let set = policies(&[&rule]);
-        let parts = rule_parts(&set);
+        let parts = rule_parts(&set, None);
         assert!(parts.len() > 1);
         assert!(parts.iter().all(|p| p.len() <= CHUNK_LIMIT));
         assert_eq!(parts.concat(), rule);
@@ -176,10 +178,10 @@ mod tests {
         let set = policies(&["alpha"]);
         let state = MemoryStore::new();
 
-        assert!(rule_injection(&set, &state, "s1", false, Some(1)).is_some());
-        assert!(rule_injection(&set, &state, "s1", false, Some(1)).is_none());
-        assert!(rule_injection(&set, &state, "s1", false, Some(2)).is_none());
-        assert!(rule_injection(&set, &state, "s2", false, Some(1)).is_some());
+        assert!(rule_injection(&set, &state, "s1", false, Some(1), None).is_some());
+        assert!(rule_injection(&set, &state, "s1", false, Some(1), None).is_none());
+        assert!(rule_injection(&set, &state, "s1", false, Some(2), None).is_none());
+        assert!(rule_injection(&set, &state, "s2", false, Some(1), None).is_some());
     }
 
     #[test]
@@ -187,8 +189,8 @@ mod tests {
         let set = policies(&["alpha"]);
         let state = MemoryStore::new();
 
-        assert!(rule_injection(&set, &state, "s1", false, Some(1)).is_some());
+        assert!(rule_injection(&set, &state, "s1", false, Some(1), None).is_some());
         invalidate(&state, "s1");
-        assert!(rule_injection(&set, &state, "s1", false, Some(1)).is_some());
+        assert!(rule_injection(&set, &state, "s1", false, Some(1), None).is_some());
     }
 }

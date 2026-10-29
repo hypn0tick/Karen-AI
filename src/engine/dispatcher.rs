@@ -146,6 +146,7 @@ impl Engine {
                 &req.session_id,
                 false,
                 req.part,
+                Some(&crate::engine::facts::runtime(&req.raw)),
             ) {
                 injections.push(injection);
             }

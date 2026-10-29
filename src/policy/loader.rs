@@ -188,6 +188,58 @@ pub struct Rule {
     pub id: String,
     pub path: PathBuf,
     pub content: String,
+    /// Runtimes the rule is injected into (`runtime` fact names); empty means
+    /// every runtime. Set by a `runtimes: [claude, codex]` front matter block.
+    pub runtimes: Vec<String>,
+}
+
+impl Rule {
+    #[must_use]
+    pub fn applies_to(&self, runtime: Option<&str>) -> bool {
+        self.runtimes.is_empty() || runtime.is_some_and(|r| self.runtimes.iter().any(|x| x == r))
+    }
+}
+
+/// Split an optional `---` front matter block off a rule file. The only key is
+/// `runtimes`, a comma-separated list with optional brackets.
+fn rule_front_matter(path: &Path, text: &str) -> Result<(Vec<String>, String), LoadError> {
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let Some(rest) = body
+        .strip_prefix("---\n")
+        .or_else(|| body.strip_prefix("---\r\n"))
+    else {
+        return Ok((Vec::new(), text.to_string()));
+    };
+    let invalid = |message: String| LoadError::Rule {
+        path: path.to_path_buf(),
+        message,
+    };
+    let end = rest
+        .find("\n---")
+        .ok_or_else(|| invalid("front matter has no closing `---`".into()))?;
+    let mut runtimes = Vec::new();
+    for line in rest[..end].lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let (key, value) = line
+            .split_once(':')
+            .ok_or_else(|| invalid(format!("front matter line `{line}` is not `key: value`")))?;
+        if key.trim() != "runtimes" {
+            return Err(invalid(format!(
+                "unknown front matter key `{}` (only `runtimes`)",
+                key.trim()
+            )));
+        }
+        runtimes = value
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .split(',')
+            .map(|r| r.trim().trim_matches(['"', '\'']).to_string())
+            .filter(|r| !r.is_empty())
+            .collect();
+    }
+    let after = &rest[end + 4..];
+    let after = after.split_once('\n').map_or("", |(_, b)| b);
+    Ok((runtimes, after.to_string()))
 }
 
 /// Everything she needs to evaluate a request: every layer, merged. The Karen who prepares the way only someone with a laminated process can.
@@ -232,6 +284,8 @@ pub enum LoadError {
         #[source]
         source: Box<toml::de::Error>,
     },
+    #[error("invalid rule {path}: {message}")]
+    Rule { path: PathBuf, message: String },
     // The Karen who boxes her grievances so they don't take up the whole
     // hallway — an error this size should wait politely by the door.
     #[error(transparent)]
@@ -806,7 +860,13 @@ fn load_rules(dir: &Path) -> Result<Vec<Rule>, LoadError> {
             .and_then(|s| s.to_str())
             .unwrap_or("rule")
             .to_string();
-        rules.push(Rule { id, path, content });
+        let (runtimes, content) = rule_front_matter(&path, &content)?;
+        rules.push(Rule {
+            id,
+            path,
+            content,
+            runtimes,
+        });
     }
     Ok(rules)
 }

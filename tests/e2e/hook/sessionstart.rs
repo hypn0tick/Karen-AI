@@ -128,3 +128,56 @@ fn karen_verifies_sessionstart_part_0_treated_as_none() {
         "part 0 must deliver nothing: {stdout}"
     );
 }
+
+#[test]
+#[serial]
+fn karen_injects_a_runtime_scoped_rule_only_into_its_runtimes() {
+    let env = TestEnv::with_config(crate::e2e::common::fixtures::DEFAULT_CONFIG, &[], &[]);
+    std::fs::write(
+        env.policies_dir.join("rules").join("10-claude-only.md"),
+        "---\nruntimes: [claude, codex]\n---\n# Claude only\n\nScoped-rule-marker.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        env.policies_dir.join("rules").join("20-everyone.md"),
+        "# Everyone\n\nShared-rule-marker.\n",
+    )
+    .unwrap();
+    let context = |session: &str, extra: serde_json::Value| {
+        let mut input = json!({ "hook_event_name": "SessionStart", "session_id": session, "source": "startup" });
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let (code, stdout, _) = env.run_hook(&input.to_string(), &[]);
+        assert_exit_code(code, 0);
+        stdout
+    };
+
+    let claude = context(
+        "scoped-claude",
+        json!({ "transcript_path": "C:/Users/u/.claude/projects/p/s.jsonl" }),
+    );
+    assert!(claude.contains("Scoped-rule-marker"), "{claude}");
+    assert!(claude.contains("Shared-rule-marker"), "{claude}");
+    assert!(
+        !claude.contains("runtimes:"),
+        "front matter is not injected: {claude}"
+    );
+
+    let opencode = context(
+        "scoped-opencode",
+        json!({ "facts": { "runtime": "opencode" } }),
+    );
+    assert!(!opencode.contains("Scoped-rule-marker"), "{opencode}");
+    assert!(opencode.contains("Shared-rule-marker"), "{opencode}");
+
+    std::fs::write(
+        env.policies_dir.join("rules").join("30-bad.md"),
+        "---\nruntime: claude\n---\nx\n",
+    )
+    .unwrap();
+    let (code, stdout, _) = env.run_karen(&["validate", "--json"]);
+    assert_eq!(code, 78, "{stdout}");
+    assert!(stdout.contains("unknown front matter key"), "{stdout}");
+}
