@@ -141,6 +141,10 @@ All 151 tests must pass (14 unit + 17 integration + 120 e2e — zero ignored). T
 
 ---
 
+## Versioning
+
+Karen follows Cargo's reading of SemVer for `0.x`: the minor number is the breaking digit and the patch number carries additions. A release whose changes only add (a new condition, a new field path, a new command) is a patch. A release that changes what existing policies, hooks or installs do is a minor, including a gate that used to do nothing and now acts. Numbers do not run out: 0.10 follows 0.9. 1.0 is a decision that the gate format and hook protocol are stable, not a count. The Karen who reads the fine print, then makes everyone else read it too.
+
 ## Releases
 
 Releases are manual (the Karen who trusts nobody else with the big red button), and the order is policy, not preference:
