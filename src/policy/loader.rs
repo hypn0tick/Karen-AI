@@ -293,9 +293,13 @@ impl Roots {
             };
         };
         let repo = start.ancestors().find(|d| d.join(".git").exists());
+        // The walk stops at the repository root, and never climbs above the
+        // user's home: a root there belongs to another project.
+        let home = crate::home::user_home().filter(|h| start.starts_with(h));
         let in_tree = start
             .ancestors()
             .take_while(|d| repo.is_none_or(|r| d.starts_with(r)))
+            .take_while(|d| home.as_ref().is_none_or(|h| d.starts_with(h)))
             .map(|a| a.join(".karen").join("policies"))
             .find(|p| p.is_dir() && !same_dir(p, user.as_deref()));
         let (project, found_by) = match in_tree {
