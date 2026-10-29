@@ -1,0 +1,42 @@
+// Built-in gates, compiled into Karen: the few rules no reasonable user objects to.
+// A user or project layer can disable one by id (`[policy] disable = [...]`).
+{
+  "gates": [
+    {
+      "id": "karen-no-force-push-default-branch",
+      "name": "No force-push to the default branch",
+      "description": "Force-pushing main or master rewrites history everyone else builds on.",
+      "event": "PreToolUse",
+      "tool": "Bash",
+      "priority": 90,
+      "tags": ["git", "safety", "builtin"],
+      "match": {
+        "all": [
+          { "type": "command_regex", "pattern": "git\\s+push\\b.*(-f\\b|--force\\b|--force-with-lease\\b)" },
+          { "type": "command_regex", "pattern": "\\b(main|master)\\b" }
+        ]
+      },
+      "action": {
+        "type": "deny",
+        "reason": "Force-pushing main or master rewrites shared history. Fix it forward with a new commit instead."
+      }
+    },
+    {
+      "id": "karen-no-secrets-in-commands",
+      "name": "No credentials in a command line",
+      "description": "A credential in a command lands in logs and transcripts.",
+      "event": "PreToolUse",
+      "priority": 95,
+      "tags": ["security", "secrets", "builtin"],
+      "match": {
+        "all": [
+          { "type": "command_regex", "pattern": "AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|xox[baprs]-[0-9a-zA-Z-]{10,}|-----BEGIN\\s+(RSA\\s+|EC\\s+|OPENSSH\\s+)?PRIVATE KEY-----" }
+        ]
+      },
+      "action": {
+        "type": "deny",
+        "reason": "A credential appeared in a command, so it is now in logs and the transcript: rotate it, then pass it through a secret store or an environment variable instead."
+      }
+    }
+  ]
+}

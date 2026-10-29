@@ -1,7 +1,7 @@
 //! Where Karen lives: `~/.karen` on every platform, beside `~/.claude` and
 //! `~/.codex`. `KAREN_HOME` moves the whole house.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The user's home: `HOME`, then `USERPROFILE`, then the platform's answer.
 #[must_use]
@@ -40,14 +40,4 @@ pub fn user_policies() -> PathBuf {
 #[must_use]
 pub fn cache_dir() -> PathBuf {
     karen_home().join("cache")
-}
-
-/// `path` relative to `base` when it is inside it, for short provenance.
-#[must_use]
-pub fn display_under(path: &Path, base: &Path) -> String {
-    path.strip_prefix(base)
-        .unwrap_or(path)
-        .display()
-        .to_string()
-        .replace('\\', "/")
 }

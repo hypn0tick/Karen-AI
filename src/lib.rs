@@ -12,5 +12,5 @@ pub mod types;
 
 pub use adapters::{Claude, ClaudeClassicAdapter, RuntimeAdapter};
 pub use engine::Engine;
-pub use policy::{PolicySet, load, locate_policies};
+pub use policy::{PolicySet, Roots, load, load_roots};
 pub use types::{Action, AdapterType, EngineRequest, EngineResponse, Event};

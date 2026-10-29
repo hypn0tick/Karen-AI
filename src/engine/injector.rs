@@ -136,6 +136,9 @@ mod tests {
                 .collect(),
             config: Config::default(),
             root: PathBuf::from("policies"),
+            layers: Vec::new(),
+            issues: Vec::new(),
+            changes: Vec::new(),
         }
     }
 

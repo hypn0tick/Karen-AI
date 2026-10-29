@@ -1,6 +1,6 @@
 //! Loads your rules from disk. She compiles regex once, then brings them up forever. The Karen who does the work once.
 
-use crate::policy::gate::{CompileError, Gate, GateDef};
+use crate::policy::gate::{CompileError, Gate, GateDef, Layer};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -95,6 +95,9 @@ pub struct PolicyConfig {
     pub gates_dir: String,
     #[serde(default = "default_true")]
     pub validate_on_load: bool,
+    /// Gate ids from earlier layers that this layer switches off.
+    #[serde(default)]
+    pub disable: Vec<String>,
 }
 
 impl Default for PolicyConfig {
@@ -103,6 +106,7 @@ impl Default for PolicyConfig {
             rules_dir: default_rules_dir(),
             gates_dir: default_gates_dir(),
             validate_on_load: true,
+            disable: Vec::new(),
         }
     }
 }
@@ -186,13 +190,18 @@ pub struct Rule {
     pub content: String,
 }
 
-/// Everything she needs to evaluate a request. The Karen who prepares the way only someone with a laminated process can.
+/// Everything she needs to evaluate a request: every layer, merged. The Karen who prepares the way only someone with a laminated process can.
 #[derive(Debug, Clone)]
 pub struct PolicySet {
     pub gates: Vec<Gate>,
     pub rules: Vec<Rule>,
     pub config: Config,
+    /// The project layer's root, else the user layer's.
     pub root: PathBuf,
+    /// Every layer read from disk, in merge order (the built-in layer has no root).
+    pub layers: Vec<(Layer, PathBuf)>,
+    pub issues: Vec<MergeIssue>,
+    pub changes: Vec<MergeChange>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -236,67 +245,313 @@ enum GateFile {
     Many { gates: Vec<GateDef> },
 }
 
-/// Find the policy root, nearest-first: `$KAREN_POLICIES` if set, then
-/// `./policies` in the current directory, then `$CLAUDE_PLUGIN_ROOT/policies`,
-/// then any `policies/` directory above the binary. The Karen who checks
-/// where she's standing before she checks the building — your project
-/// outranks her installation, and both outrank her upbringing.
-#[must_use]
-pub fn locate_policies() -> PathBuf {
-    if let Ok(path) = std::env::var("KAREN_POLICIES") {
-        return PathBuf::from(path);
-    }
-    let local = Path::new("policies");
-    if local.is_dir() {
-        return local.to_path_buf();
-    }
-    if let Ok(root) = std::env::var("CLAUDE_PLUGIN_ROOT") {
-        let candidate = PathBuf::from(root).join("policies");
-        if candidate.is_dir() {
-            return candidate;
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        for ancestor in exe.ancestors().skip(1) {
-            let candidate = ancestor.join("policies");
-            if candidate.is_dir() {
-                return candidate;
-            }
-        }
-    }
-    PathBuf::from("policies")
+/// The gates compiled into Karen, under every other layer.
+const BUILTIN_GATES: &str = include_str!("builtin.json");
+
+/// Where a session's layers live. The user layer is `<Karen home>/policies`.
+/// The project layer is the root named explicitly (`--policies`, then
+/// `KAREN_POLICIES`), else the nearest `.karen/policies` at or above the
+/// working directory. The Karen who checks where she's standing before she
+/// checks the building.
+#[derive(Debug, Clone, Default)]
+pub struct Roots {
+    pub user: Option<PathBuf>,
+    pub project: Option<PathBuf>,
+    /// The project root was named, so a missing directory is an error rather
+    /// than a session without a project layer.
+    pub explicit: bool,
 }
 
-/// Load the full policy set from `root`.
+impl Roots {
+    #[must_use]
+    pub fn discover(explicit: Option<PathBuf>, cwd: Option<&Path>) -> Self {
+        let user = Some(crate::home::user_policies()).filter(|p| p.is_dir());
+        if let Some(project) =
+            explicit.or_else(|| std::env::var_os("KAREN_POLICIES").map(PathBuf::from))
+        {
+            return Self {
+                user,
+                project: Some(project),
+                explicit: true,
+            };
+        }
+        let start = cwd
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok());
+        let project = start.and_then(|dir| {
+            dir.ancestors()
+                .map(|a| a.join(".karen").join("policies"))
+                .find(|p| p.is_dir() && !same_dir(p, user.as_deref()))
+        });
+        Self {
+            user,
+            project,
+            explicit: false,
+        }
+    }
+
+    /// The root an embedder or a command shows as "the" policy root: the
+    /// project layer, else the user layer.
+    #[must_use]
+    pub fn primary(&self) -> PathBuf {
+        self.project
+            .clone()
+            .or_else(|| self.user.clone())
+            .unwrap_or_default()
+    }
+}
+
+fn same_dir(a: &Path, b: Option<&Path>) -> bool {
+    b.is_some_and(|b| match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    })
+}
+
+/// Something the merge refused or could not apply. The merged policy still
+/// loads, because a load failure fails open: one bad file in a project must
+/// never switch off every other layer's gates.
+#[derive(Debug, Clone)]
+pub struct MergeIssue {
+    pub layer: Layer,
+    pub message: String,
+    /// A refused change (a locked gate, a reused id without `override`):
+    /// `karen validate` fails on it. Otherwise a warning.
+    pub refused: bool,
+}
+
+/// A gate an later layer replaced or disabled.
+#[derive(Debug, Clone)]
+pub struct MergeChange {
+    pub gate: String,
+    pub layer: Layer,
+    pub kind: &'static str,
+}
+
+/// Load the built-in, user and project layers, with `root` as the project
+/// layer.
 ///
 /// # Errors
 ///
-/// Returns [`LoadError::Root`] when the policy root directory does not exist,
-/// [`LoadError::Io`] when a policy file cannot be read, [`LoadError::Json5`]
-/// or [`LoadError::Toml`] when `config.toml` or a gate file does not parse,
+/// As [`load_roots`].
+pub fn load(root: &Path) -> Result<PolicySet, LoadError> {
+    load_roots(&Roots {
+        user: Some(crate::home::user_policies()).filter(|p| p.is_dir()),
+        project: Some(root.to_path_buf()),
+        explicit: true,
+    })
+}
+
+/// Load and merge every layer in `roots` over the built-in gates.
+///
+/// # Errors
+///
+/// Returns [`LoadError::Root`] when an explicitly named project root does not
+/// exist, [`LoadError::Io`] when a policy file cannot be read,
+/// [`LoadError::Json5`] or [`LoadError::Toml`] when a file does not parse,
 /// and [`LoadError::Gate`] when a gate fails to compile — the Karen who
 /// refuses to load a policy she cannot enforce.
-pub fn load(root: &Path) -> Result<PolicySet, LoadError> {
-    if !root.is_dir() {
-        return Err(LoadError::Root {
-            root: root.to_path_buf(),
-            source: std::io::Error::new(std::io::ErrorKind::NotFound, "policy root missing"),
-        });
+pub fn load_roots(roots: &Roots) -> Result<PolicySet, LoadError> {
+    let mut layers = vec![builtin_layer()?];
+    if let Some(user) = &roots.user {
+        layers.push(read_layer(Layer::User, user)?);
     }
+    if let Some(project) = &roots.project {
+        if project.is_dir() {
+            layers.push(read_layer(Layer::Project, project)?);
+        } else if roots.explicit {
+            return Err(LoadError::Root {
+                root: project.clone(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "policy root missing"),
+            });
+        }
+    }
+    merge(layers, roots.primary())
+}
 
-    let config = load_config(root)?;
-    let gates = load_gates(&root.join(&config.policy.gates_dir))?;
-    let rules = load_rules(&root.join(&config.policy.rules_dir))?;
+/// One layer as read from disk, before merging.
+struct LayerFiles {
+    layer: Layer,
+    root: Option<PathBuf>,
+    table: toml::Table,
+    disable: Vec<String>,
+    gates: Vec<Gate>,
+    rules: Vec<Rule>,
+}
+
+fn builtin_layer() -> Result<LayerFiles, LoadError> {
+    let parsed: GateFile = json5::from_str(BUILTIN_GATES).map_err(|source| LoadError::Json5 {
+        path: PathBuf::from("builtin"),
+        source: Box::new(source),
+    })?;
+    let gates = gate_defs(parsed)
+        .into_iter()
+        .map(|def| tag(Gate::compile(def), Layer::Builtin, "builtin"))
+        .collect::<Result<_, _>>()?;
+    Ok(LayerFiles {
+        layer: Layer::Builtin,
+        root: None,
+        table: toml::Table::new(),
+        disable: Vec::new(),
+        gates,
+        rules: Vec::new(),
+    })
+}
+
+fn read_layer(layer: Layer, root: &Path) -> Result<LayerFiles, LoadError> {
+    let table = load_config_table(root)?;
+    let config: Config = config_from(&table, root)?;
+    let gates = load_gates(&root.join(&config.policy.gates_dir), layer)?;
     if config.policy.validate_on_load {
         validate_once(root, &gates)?;
     }
+    let rules = load_rules(&root.join(&config.policy.rules_dir))?;
+    Ok(LayerFiles {
+        layer,
+        root: Some(root.to_path_buf()),
+        table,
+        disable: config.policy.disable,
+        gates,
+        rules,
+    })
+}
 
+fn tag(gate: Result<Gate, CompileError>, layer: Layer, source: &str) -> Result<Gate, LoadError> {
+    let mut gate = gate.map_err(Box::new)?;
+    gate.layer = layer;
+    source.clone_into(&mut gate.source);
+    Ok(gate)
+}
+
+/// Apply the layers in order: each layer's disables, then its gates.
+fn merge(layers: Vec<LayerFiles>, primary: PathBuf) -> Result<PolicySet, LoadError> {
+    let mut gates: Vec<Gate> = Vec::new();
+    let mut rules: Vec<Rule> = Vec::new();
+    let mut table = toml::Table::new();
+    let mut issues = Vec::new();
+    let mut changes = Vec::new();
+    let mut roots = Vec::new();
+
+    for files in layers {
+        let layer = files.layer;
+        if let Some(root) = files.root {
+            roots.push((layer, root));
+        }
+        merge_tables(&mut table, files.table);
+
+        for id in files.disable {
+            match gates.iter().position(|g| g.id == id) {
+                None => issues.push(MergeIssue {
+                    layer,
+                    message: format!("disables `{id}`, which no earlier layer defines"),
+                    refused: false,
+                }),
+                Some(i) if gates[i].locked => issues.push(MergeIssue {
+                    layer,
+                    message: format!(
+                        "tries to disable `{id}`, locked by the {} layer; it stays enforced",
+                        gates[i].layer
+                    ),
+                    refused: true,
+                }),
+                Some(i) => {
+                    gates.remove(i);
+                    changes.push(MergeChange {
+                        gate: id,
+                        layer,
+                        kind: "disabled",
+                    });
+                }
+            }
+        }
+
+        for gate in files.gates {
+            match gates.iter().position(|g| g.id == gate.id) {
+                None => {
+                    if gate.replaces {
+                        issues.push(MergeIssue {
+                            layer,
+                            message: format!(
+                                "`{}` sets override but no earlier layer defines it",
+                                gate.id
+                            ),
+                            refused: false,
+                        });
+                    }
+                    gates.push(gate);
+                }
+                Some(i) if gates[i].locked => issues.push(MergeIssue {
+                    layer,
+                    message: format!(
+                        "tries to replace `{}`, locked by the {} layer; the {} gate stays",
+                        gate.id, gates[i].layer, gates[i].layer
+                    ),
+                    refused: true,
+                }),
+                Some(i) if gates[i].layer == layer || !gate.replaces => issues.push(MergeIssue {
+                    layer,
+                    message: format!(
+                        "reuses the id `{}` ({}) without `\"override\": true`; the first definition stays",
+                        gate.id, gates[i].source
+                    ),
+                    refused: true,
+                }),
+                Some(i) => {
+                    changes.push(MergeChange {
+                        gate: gate.id.clone(),
+                        layer,
+                        kind: "replaced",
+                    });
+                    gates[i] = gate;
+                }
+            }
+        }
+
+        for rule in files.rules {
+            rules.retain(|r| r.id != rule.id);
+            rules.push(rule);
+        }
+    }
+
+    gates.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
+    let config = config_from(&table, &primary)?;
     Ok(PolicySet {
         gates,
         rules,
         config,
-        root: root.to_path_buf(),
+        root: primary,
+        layers: roots,
+        issues,
+        changes,
     })
+}
+
+/// Later layers win per key; arrays are unioned in order.
+fn merge_tables(into: &mut toml::Table, from: toml::Table) {
+    for (key, value) in from {
+        match (into.get_mut(&key), value) {
+            (Some(toml::Value::Table(a)), toml::Value::Table(b)) => merge_tables(a, b),
+            (Some(toml::Value::Array(a)), toml::Value::Array(b)) => {
+                for item in b {
+                    if !a.contains(&item) {
+                        a.push(item);
+                    }
+                }
+            }
+            (_, value) => {
+                into.insert(key, value);
+            }
+        }
+    }
+}
+
+fn config_from(table: &toml::Table, root: &Path) -> Result<Config, LoadError> {
+    toml::Value::Table(table.clone())
+        .try_into()
+        .map_err(|source| LoadError::Toml {
+            path: root.join("config.toml"),
+            source: Box::new(source),
+        })
 }
 
 /// Compile every gate's patterns once per version of the policy files. A
@@ -376,10 +631,10 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-fn load_config(root: &Path) -> Result<Config, LoadError> {
+fn load_config_table(root: &Path) -> Result<toml::Table, LoadError> {
     let path = root.join("config.toml");
     if !path.is_file() {
-        return Ok(Config::default());
+        return Ok(toml::Table::new());
     }
     let text = std::fs::read_to_string(&path).map_err(|source| LoadError::Io {
         path: path.clone(),
@@ -391,7 +646,14 @@ fn load_config(root: &Path) -> Result<Config, LoadError> {
     })
 }
 
-fn load_gates(dir: &Path) -> Result<Vec<Gate>, LoadError> {
+fn gate_defs(parsed: GateFile) -> Vec<GateDef> {
+    match parsed {
+        GateFile::Single(def) => vec![*def],
+        GateFile::Many { gates } => gates,
+    }
+}
+
+fn load_gates(dir: &Path, layer: Layer) -> Result<Vec<Gate>, LoadError> {
     let mut gates = Vec::new();
     if !dir.is_dir() {
         return Ok(gates);
@@ -407,15 +669,11 @@ fn load_gates(dir: &Path) -> Result<Vec<Gate>, LoadError> {
             path: path.clone(),
             source: Box::new(source),
         })?;
-        let defs = match parsed {
-            GateFile::Single(def) => vec![*def],
-            GateFile::Many { gates } => gates,
-        };
-        for def in defs {
-            gates.push(Gate::compile(def).map_err(Box::new)?);
+        let source = path.display().to_string();
+        for def in gate_defs(parsed) {
+            gates.push(tag(Gate::compile(def), layer, &source)?);
         }
     }
-    gates.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
     Ok(gates)
 }
 
@@ -474,6 +732,15 @@ fn collect_with_extension(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) -> Resu
 mod tests {
     use super::*;
 
+    /// The built-in layer plus `root`, never the real user layer.
+    fn load_project(root: &Path) -> Result<PolicySet, LoadError> {
+        load_roots(&Roots {
+            user: None,
+            project: Some(root.to_path_buf()),
+            explicit: true,
+        })
+    }
+
     #[test]
     fn loads_gates_and_rules() {
         // The Karen who builds her own evidence instead of borrowing the
@@ -511,19 +778,20 @@ mod tests {
         )
         .expect("rule");
 
-        let set = load(root).expect("policies load");
-        assert_eq!(
-            set.gates.len(),
-            2,
-            "expected exactly the two gates she wrote"
-        );
+        let set = load_project(root).expect("policies load");
+        let written: Vec<_> = set
+            .gates
+            .iter()
+            .filter(|g| g.layer == Layer::Project)
+            .collect();
+        assert_eq!(written.len(), 2, "expected exactly the two gates she wrote");
         assert!(!set.rules.is_empty(), "expected the rule she filed");
         assert!(
             set.gates.windows(2).all(|w| w[0].priority >= w[1].priority),
             "gates must be priority ordered"
         );
         assert_eq!(
-            set.gates[0].id, "high-priority",
+            written[0].id, "high-priority",
             "the higher priority gate sorts first — she reads the file names, not just the files"
         );
     }
@@ -544,7 +812,7 @@ mod tests {
             r#"{ "id": "typo-gate", "event": "PreToolUse", "matc": { "all": [ { "type": "command_contains", "value": "git push --force" } ] }, "action": { "type": "deny", "reason": "never fires on benign commands" } }"#,
         )
         .expect("typo gate");
-        let err = load(root).expect_err("a typo'd gate key must fail to load");
+        let err = load_project(root).expect_err("a typo'd gate key must fail to load");
         let msg = err.to_string();
         assert!(
             msg.contains("matc"),
@@ -568,7 +836,7 @@ mod tests {
         std::fs::create_dir_all(root.join("rules")).expect("rules dir");
         std::fs::write(root.join("config.toml"), "[engine]\nfaile_open = true\n")
             .expect("typo config");
-        let err = load(root).expect_err("a typo'd config key must fail to load");
+        let err = load_project(root).expect_err("a typo'd config key must fail to load");
         let msg = err.to_string();
         assert!(
             msg.contains("faile_open"),

@@ -3,5 +3,8 @@
 pub mod gate;
 pub mod loader;
 
-pub use gate::{ActionDef, Gate, GateDef};
-pub use loader::{Config, LoadError, MaintenanceConfig, PolicySet, Rule, load, locate_policies};
+pub use gate::{ActionDef, Gate, GateDef, Layer};
+pub use loader::{
+    Config, LoadError, MaintenanceConfig, MergeChange, MergeIssue, PolicySet, Roots, Rule, load,
+    load_roots,
+};

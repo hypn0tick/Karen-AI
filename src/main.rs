@@ -224,8 +224,8 @@ fn init_logging() {
         .try_init();
 }
 
-fn policy_root(override_path: Option<PathBuf>) -> PathBuf {
-    override_path.unwrap_or_else(policy::locate_policies)
+fn policy_roots(explicit: Option<PathBuf>, cwd: Option<&std::path::Path>) -> policy::Roots {
+    policy::Roots::discover(explicit, cwd)
 }
 
 fn normalize(adapter: Adapter, raw: Value) -> Result<EngineRequest, AdapterError> {
@@ -261,13 +261,13 @@ fn run_hook(adapter: Adapter, policies: Option<PathBuf>, part: Option<usize>) ->
     };
     request.part = part;
 
-    let root = policy_root(policies);
-    let set = match policy::load(&root) {
+    let roots = policy_roots(policies, request.cwd.as_deref().map(std::path::Path::new));
+    let set = match policy::load_roots(&roots) {
         Ok(set) => set,
         Err(error) => {
             // Still fail open, so a broken install never bricks the agent, but
             // out loud: a guard nobody knows is off duty is worse than none.
-            tracing::error!(%error, root = %root.display(), "policy load failed");
+            tracing::error!(%error, root = %roots.primary().display(), "policy load failed");
             let message = format!(
                 "Karen-AI is not enforcing any policy: {error}. Set KAREN_POLICIES or pass --policies."
             );
@@ -286,21 +286,71 @@ fn run_hook(adapter: Adapter, policies: Option<PathBuf>, part: Option<usize>) ->
     }
 
     let state = state_for(&set);
+    let merge_notice = merge_notice(&set, state.as_ref(), &request.session_id);
     karen::engine::facts::enrich(&set, state.as_ref(), &mut request);
     let engine = Engine::new(set, state);
     let response = engine.dispatch(&request);
 
-    let output = match adapter {
+    let mut output = match adapter {
         Adapter::Claude => karen::adapters::Claude.denormalize(&request, response),
         Adapter::ClaudeClassic => {
             karen::adapters::ClaudeClassicAdapter.denormalize(&request, response)
         }
     };
+    if let Some(notice) = merge_notice {
+        add_system_message(&mut output, &notice);
+    }
     match serde_json::to_string(&output) {
         Ok(text) => println!("{text}"),
         Err(error) => fail_open(&format!("cannot serialize response: {error}"), dev),
     }
     EXIT_OK
+}
+
+/// What the merge refused or could not apply, told once per session and again
+/// whenever it changes: the gates still load, but nobody should find out late
+/// that a project tried to switch off a locked one.
+fn merge_notice(set: &PolicySet, state: &dyn StateStore, session: &str) -> Option<String> {
+    if set.issues.is_empty() {
+        return None;
+    }
+    let text = set
+        .issues
+        .iter()
+        .map(|i| format!("the {} layer {}", i.layer, i.message))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let key = "karen.merge_issues";
+    if state.get(session, key).as_ref().and_then(Value::as_str) == Some(text.as_str()) {
+        return None;
+    }
+    state.set(session, key, Value::from(text.clone()));
+    Some(format!(
+        "Karen-AI policy merge: {text}. Run `karen validate` for details."
+    ))
+}
+
+fn add_system_message(output: &mut Value, message: &str) {
+    let Some(object) = output.as_object_mut() else {
+        return;
+    };
+    let joined = match object.get("systemMessage") {
+        Some(Value::String(existing)) => format!(
+            "{existing}
+{message}"
+        ),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .chain(std::iter::once(message))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            ),
+        _ => message.to_string(),
+    };
+    object.insert("systemMessage".into(), Value::from(joined));
 }
 
 fn state_for(set: &PolicySet) -> Box<dyn StateStore> {
@@ -321,8 +371,8 @@ fn fail_open(message: &str, dev: bool) -> ! {
 }
 
 fn run_validate(args: ValidateArgs, verbose: bool) -> i32 {
-    let root = policy_root(args.policies);
-    let set = match load_policies(&root, &args.out) {
+    let roots = policy_roots(args.policies, None);
+    let set = match load_policies(&roots, &args.out) {
         Ok(set) => set,
         Err(code) => return code,
     };
@@ -333,6 +383,17 @@ fn run_validate(args: ValidateArgs, verbose: bool) -> i32 {
             "POLICY_INVALID",
             &error.to_string(),
             "Run `karen validate` after fixing the reported file.",
+            EXIT_CONFIG,
+        );
+    }
+    // A change the merge refused (a locked gate, a reused id) is enforced as if
+    // it were absent at hook time; here it is an error to fix.
+    if let Some(issue) = set.issues.iter().find(|i| i.refused) {
+        return fail(
+            &args.out,
+            "POLICY_INVALID",
+            &format!("the {} layer {}", issue.layer, issue.message),
+            "Remove the refused change, or add `\"override\": true` where a replacement is meant.",
             EXIT_CONFIG,
         );
     }
@@ -393,8 +454,8 @@ fn run_evaluate(args: &EvaluateArgs) -> i32 {
         }
     };
 
-    let root = policy_root(args.policies.clone());
-    let set = match load_policies(&root, &args.out) {
+    let roots = policy_roots(args.policies.clone(), None);
+    let set = match load_policies(&roots, &args.out) {
         Ok(set) => set,
         Err(code) => return code,
     };
@@ -404,11 +465,22 @@ fn run_evaluate(args: &EvaluateArgs) -> i32 {
     // The Karen who lets you practice your apology without filing it.
     let state = Box::new(ReadOnlyStore::new(state_for(&set)));
     karen::engine::facts::enrich(&set, state.as_ref(), &mut request);
+    let layer_of: std::collections::HashMap<String, &'static str> = set
+        .gates
+        .iter()
+        .map(|g| (g.id.clone(), g.layer.name()))
+        .collect();
+    let layer = |id: &str| layer_of.get(id).copied().unwrap_or("unknown");
 
     let engine = Engine::new(set, state);
     let response = engine.dispatch(&request);
 
-    let data = evaluation_json(&response, args.adapter, &policy_root, args.include_content);
+    let mut data = evaluation_json(&response, args.adapter, &policy_root, args.include_content);
+    data["fired_layers"] = response
+        .fired_policies
+        .iter()
+        .map(|id| json!({ "id": id, "layer": layer(id) }))
+        .collect();
     if args.out.wants_json() {
         return print_json(data, &args.out);
     }
@@ -423,7 +495,12 @@ fn run_evaluate(args: &EvaluateArgs) -> i32 {
     if response.fired_policies.is_empty() {
         println!("fired: (none)");
     } else {
-        println!("fired: {}", response.fired_policies.join(", "));
+        let fired: Vec<String> = response
+            .fired_policies
+            .iter()
+            .map(|id| format!("{id} ({})", layer(id)))
+            .collect();
+        println!("fired: {}", fired.join(", "));
     }
     println!("injections: {}", response.injections.len());
     println!();
@@ -577,8 +654,8 @@ fn run_schema(args: &SchemaArgs) -> i32 {
     }
 }
 
-fn load_policies(root: &std::path::Path, out: &OutputArgs) -> Result<PolicySet, i32> {
-    policy::load(root).map_err(|error| {
+fn load_policies(roots: &policy::Roots, out: &OutputArgs) -> Result<PolicySet, i32> {
+    policy::load_roots(roots).map_err(|error| {
         let (code, fix) = match &error {
             LoadError::Root { .. } => (
                 "POLICY_NOT_FOUND",
@@ -610,8 +687,26 @@ fn policy_json(set: &PolicySet) -> Value {
                     "action": action_name(&gate.action),
                     "enabled": gate.enabled,
                     "tags": gate.tags,
+                    "layer": gate.layer.name(),
+                    "source": gate.source,
+                    "locked": gate.locked,
                 })
             })
+            .collect::<Vec<_>>(),
+        "layers": set
+            .layers
+            .iter()
+            .map(|(layer, root)| json!({ "layer": layer.name(), "root": root.display().to_string() }))
+            .collect::<Vec<_>>(),
+        "changes": set
+            .changes
+            .iter()
+            .map(|c| json!({ "gate": c.gate, "layer": c.layer.name(), "kind": c.kind }))
+            .collect::<Vec<_>>(),
+        "issues": set
+            .issues
+            .iter()
+            .map(|i| json!({ "layer": i.layer.name(), "message": i.message, "refused": i.refused }))
             .collect::<Vec<_>>(),
         "rules": set
             .rules

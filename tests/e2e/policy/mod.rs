@@ -4,4 +4,6 @@
 #[cfg(test)]
 mod gates;
 #[cfg(test)]
+mod layers;
+#[cfg(test)]
 mod loading;

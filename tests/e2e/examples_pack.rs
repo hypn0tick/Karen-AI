@@ -130,9 +130,14 @@ fn karen_examples_pack_validates_exactly_as_shipped() {
     let (code, stdout, _) = env.run_karen(&["validate", "--json"]);
     assert_eq!(code, 0, "the pack as shipped must validate clean");
     let data = assert_json_ok(&stdout);
+    let shipped = data["gates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|g| g["layer"] == "project")
+        .count();
     assert_eq!(
-        data["gate_count"].as_u64(),
-        Some(20),
+        shipped, 20,
         "the pack ships exactly twenty gates — she counted twice"
     );
     assert_eq!(

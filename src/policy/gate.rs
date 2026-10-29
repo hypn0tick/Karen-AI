@@ -36,6 +36,38 @@ pub struct GateDef {
     pub action: ActionDef,
     #[serde(default)]
     pub state: Option<StateSpec>,
+    /// Replace the gate of the same id from an earlier layer. Without it a
+    /// reused id is refused, so no gate is ever shadowed by accident.
+    #[serde(default, rename = "override")]
+    pub replaces: bool,
+    /// A later layer can neither replace nor disable this gate.
+    #[serde(default)]
+    pub locked: bool,
+}
+
+/// The policy layer a gate came from, in merge order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Layer {
+    Builtin,
+    User,
+    Project,
+}
+
+impl Layer {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Builtin => "builtin",
+            Self::User => "user",
+            Self::Project => "project",
+        }
+    }
+}
+
+impl fmt::Display for Layer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 const fn default_priority() -> i32 {
@@ -198,6 +230,12 @@ pub struct Gate {
     pub matcher: Matcher,
     pub action: ActionDef,
     pub state: Option<StateSpec>,
+    pub locked: bool,
+    pub replaces: bool,
+    /// Where the gate was defined: its layer and file (`builtin` for the
+    /// gates compiled into Karen). The loader fills these in.
+    pub layer: Layer,
+    pub source: String,
     tool_regex: Option<LazyRegex>,
 }
 
@@ -313,6 +351,10 @@ impl Gate {
             matcher,
             action: def.action,
             state: def.state,
+            locked: def.locked,
+            replaces: def.replaces,
+            layer: Layer::Project,
+            source: String::new(),
         })
     }
 
