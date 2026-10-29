@@ -101,6 +101,101 @@ console.log(JSON.stringify(result));
 
 #[test]
 #[serial]
+fn karen_runtime_opencode_plugin_reports_missing_policies_once_per_session() {
+    // The Karen who will not stand guard in silence: with no policy root the
+    // plugin still lets everything through, but each session hears once that
+    // she is off duty, through a tool result or, for a session that only
+    // idles, a prompt. Once, because a nag nobody reads is just more silence.
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::new();
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+
+    let script = env.temp_dir.path().join("drive-missing.mjs");
+    fs::write(
+        &script,
+        format!(
+            r#"const {{ KarenAI }} = await import({plugin_url:?});
+const prompts = [];
+const history = [];
+const client = {{ session: {{
+  messages: async ({{ path }}) => ({{ data: history }}),
+  get: async ({{ path }}) => ({{ data: {{ id: path.id }} }}),
+  prompt: async ({{ path, body }}) => {{ prompts.push(path.id + ": " + body.parts.map((p) => p.text).join("")); return {{ data: {{}} }}; }},
+}} }};
+const hooks = await KarenAI({{ directory: {dir:?}, client }});
+const afters = [];
+for (const callID of ["c1", "c2"]) {{
+  await hooks["tool.execute.before"]({{ tool: "bash", sessionID: "s1", callID }}, {{ args: {{ command: "git status" }} }});
+  const after = {{ title: "", output: "ok", metadata: {{}} }};
+  await hooks["tool.execute.after"]({{ tool: "bash", sessionID: "s1", callID, args: {{ command: "git status" }} }}, after);
+  afters.push(after.output);
+}}
+const say = (id, text) => history.push({{ info: {{ id, role: "assistant" }}, parts: [{{ type: "text", text }}] }});
+const idle = (sid) => hooks.event({{ event: {{ type: "session.idle", properties: {{ sessionID: sid }} }} }});
+say("m1", "Standing by."); await idle("s1"); await idle("s2");
+say("m2", "Still standing by."); await idle("s2");
+console.log(JSON.stringify({{ afters, prompts }}));
+"#,
+            dir = project_dir.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", env.policies_dir.join("not-here"))
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    let afters = result["afters"].as_array().unwrap();
+    assert!(
+        afters[0].as_str().unwrap().contains("not enforcing"),
+        "{result}"
+    );
+    assert_eq!(afters[1], "ok", "told once per session: {result}");
+    let prompts = result["prompts"].as_array().unwrap();
+    assert_eq!(
+        prompts.len(),
+        1,
+        "s1 already knows; s2 hears once: {result}"
+    );
+    assert!(
+        prompts[0]
+            .as_str()
+            .unwrap()
+            .starts_with("s2: [Karen-AI] Karen-AI is not enforcing"),
+        "{result}"
+    );
+}
+
+#[test]
+#[serial]
 fn karen_runtime_opencode_plugin_holds_idle_sessions_with_stop_gates() {
     // The Karen who stops you at the door: OpenCode has no Stop hook, so the
     // plugin turns `session.idle` into a Stop review and, when a gate blocks,

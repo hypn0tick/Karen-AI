@@ -265,8 +265,13 @@ fn run_hook(adapter: Adapter, policies: Option<PathBuf>, part: Option<usize>) ->
     let set = match policy::load(&root) {
         Ok(set) => set,
         Err(error) => {
+            // Still fail open, so a broken install never bricks the agent, but
+            // out loud: a guard nobody knows is off duty is worse than none.
             tracing::error!(%error, root = %root.display(), "policy load failed");
-            println!("{{}}");
+            let message = format!(
+                "Karen-AI is not enforcing any policy: {error}. Set KAREN_POLICIES or pass --policies."
+            );
+            println!("{}", serde_json::json!({ "systemMessage": message }));
             return EXIT_OK;
         }
     };
@@ -1270,6 +1275,14 @@ export const KarenAI = async ({ directory, client }) => {
   const reviewed = new Map(); // session -> last assistant message id already reviewed
   const held = new Set(); // sessions whose previous stop Karen blocked
   const plans = new Map(); // session -> todo list signature at its last review
+  const offDuty = new Set(); // sessions already told that no policy is enforced
+  // A missing policy root fails open; each session hears it once, not on every call.
+  const notice = (sid, message) => {
+    if (!message || !message.startsWith("Karen-AI is not enforcing")) return message;
+    if (offDuty.has(sid)) return null;
+    offDuty.add(sid);
+    return message;
+  };
   return {
     event: async ({ event }) => {
       const idle = event?.type === "session.idle" || (event?.type === "session.status" && event.properties?.status?.type === "idle");
@@ -1300,7 +1313,12 @@ export const KarenAI = async ({ directory, client }) => {
         }
       } catch {}
       const out = karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: held.has(sid), last_assistant_message: last.text, ...todo, ...(parent ? { agent_id: sid } : {}) });
-      if (out.decision !== "block") { held.delete(sid); return; }
+      if (out.decision !== "block") {
+        held.delete(sid);
+        const offline = notice(sid, out.systemMessage);
+        if (offline) client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${offline}` }] } }).catch(() => {});
+        return;
+      }
       held.add(sid);
       // Not awaited: the prompt resolves only after the model replies, and the event loop must not wait for it.
       client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${out.reason ?? "blocked by policy"}` }] } }).catch(() => {});
@@ -1329,11 +1347,12 @@ export const KarenAI = async ({ directory, client }) => {
         if (decision === "deny") throw new Error(`Karen-AI: ${reason}`);
         if (decision === "ask") throw new Error(`Karen-AI: needs human approval, and OpenCode plugins cannot ask: ${reason}`);
       }
-      if (out.systemMessage) notices.set(input.callID, out.systemMessage);
+      const message = notice(input.sessionID, out.systemMessage);
+      if (message) notices.set(input.callID, message);
     },
     "tool.execute.after": async (input, output) => {
       const out = karen({ hook_event_name: "PostToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: input.args, tool_response: output.output });
-      const notes = [notices.get(input.callID), out.decision === "block" ? out.reason : null, out.systemMessage].filter(Boolean);
+      const notes = [notices.get(input.callID), out.decision === "block" ? out.reason : null, notice(input.sessionID, out.systemMessage)].filter(Boolean);
       notices.delete(input.callID);
       if (notes.length) output.output = `${output.output ?? ""}\n\n[Karen-AI] ${notes.join("\n")}`;
     },
