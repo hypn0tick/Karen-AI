@@ -224,3 +224,79 @@ fn karen_finds_the_project_layer_above_the_working_directory() {
     std::fs::create_dir_all(&under_home).unwrap();
     assert_eq!(layers_seen(&under_home), ["user"]);
 }
+
+#[test]
+#[serial]
+fn karen_finds_the_repository_layer_from_any_worktree() {
+    let env = TestEnv::with_config("", &[], &[]);
+    let outer = env.temp_dir.path().join("outer");
+    let main = outer.join("main");
+    std::fs::create_dir_all(&main).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "git {args:?}: {status:?}");
+    };
+    git(&main, &["init", "-q"]);
+    git(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(&main, &["config", "karen.policies", "shared/policies"]);
+    git(&main, &["worktree", "add", "-q", "../wt"]);
+    let shared = main.join("shared").join("policies").join("gates");
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(shared.join("repo.json"), deny_gate("repo", "x", "repo", "")).unwrap();
+    // A root above the repository is someone else's project, not this one.
+    let stray = outer.join(".karen").join("policies").join("gates");
+    std::fs::create_dir_all(&stray).unwrap();
+    std::fs::write(
+        stray.join("stray.json"),
+        deny_gate("stray", "x", "stray", ""),
+    )
+    .unwrap();
+    let work = outer.join("wt").join("src");
+    std::fs::create_dir_all(&work).unwrap();
+
+    let found = |cwd: &std::path::Path| {
+        let mut cmd = env.karen_cmd(&["validate", "--json"]);
+        cmd.env_remove("KAREN_POLICIES").current_dir(cwd);
+        let (code, stdout, _) = run_command(cmd);
+        assert_exit_code(code, 0);
+        let data = assert_json_ok(&stdout);
+        let ids: Vec<String> = data["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|g| g["layer"] == "project")
+            .map(|g| g["id"].as_str().unwrap().to_string())
+            .collect();
+        (
+            ids,
+            data["project_found_by"].as_str().unwrap_or("").to_string(),
+        )
+    };
+
+    assert_eq!(
+        found(&work),
+        (vec!["repo".to_string()], "git-config".to_string())
+    );
+    assert_eq!(
+        found(&main),
+        (vec!["repo".to_string()], "git-config".to_string())
+    );
+
+    // A checkout's own root wins over the repository's pointer.
+    let own = outer
+        .join("wt")
+        .join(".karen")
+        .join("policies")
+        .join("gates");
+    std::fs::create_dir_all(&own).unwrap();
+    std::fs::write(own.join("own.json"), deny_gate("own", "x", "own", "")).unwrap();
+    assert_eq!(
+        found(&work),
+        (vec!["own".to_string()], "in-tree".to_string())
+    );
+}

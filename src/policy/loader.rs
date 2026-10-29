@@ -200,6 +200,8 @@ pub struct PolicySet {
     pub root: PathBuf,
     /// Every layer read from disk, in merge order (the built-in layer has no root).
     pub layers: Vec<(Layer, PathBuf)>,
+    /// How the project layer was found ([`Roots::found_by`]).
+    pub found_by: Option<&'static str>,
     pub issues: Vec<MergeIssue>,
     pub changes: Vec<MergeChange>,
 }
@@ -249,10 +251,13 @@ enum GateFile {
 const BUILTIN_GATES: &str = include_str!("builtin.json");
 
 /// Where a session's layers live. The user layer is `<Karen home>/policies`.
-/// The project layer is the root named explicitly (`--policies`, then
-/// `KAREN_POLICIES`), else the nearest `.karen/policies` at or above the
-/// working directory. The Karen who checks where she's standing before she
-/// checks the building.
+/// The project layer belongs to the repository, not to each checkout, so a
+/// session finds it from its working directory without any wiring: the root
+/// named explicitly (`--policies`, then `KAREN_POLICIES`), else the nearest
+/// `.karen/policies` from the working directory up to the repository root,
+/// else the repository's `karen.policies` setting, which every worktree of the
+/// repository shares (`git config karen.policies <path>`). The Karen who
+/// checks where she's standing before she checks the building.
 #[derive(Debug, Clone, Default)]
 pub struct Roots {
     pub user: Option<PathBuf>,
@@ -260,6 +265,8 @@ pub struct Roots {
     /// The project root was named, so a missing directory is an error rather
     /// than a session without a project layer.
     pub explicit: bool,
+    /// How the project layer was found: `explicit`, `in-tree` or `git-config`.
+    pub found_by: Option<&'static str>,
 }
 
 impl Roots {
@@ -273,20 +280,36 @@ impl Roots {
                 user,
                 project: Some(project),
                 explicit: true,
+                found_by: Some("explicit"),
             };
         }
-        let start = cwd
+        let Some(start) = cwd
             .map(Path::to_path_buf)
-            .or_else(|| std::env::current_dir().ok());
-        let project = start.and_then(|dir| {
-            dir.ancestors()
-                .map(|a| a.join(".karen").join("policies"))
-                .find(|p| p.is_dir() && !same_dir(p, user.as_deref()))
-        });
+            .or_else(|| std::env::current_dir().ok())
+        else {
+            return Self {
+                user,
+                ..Self::default()
+            };
+        };
+        let repo = start.ancestors().find(|d| d.join(".git").exists());
+        let in_tree = start
+            .ancestors()
+            .take_while(|d| repo.is_none_or(|r| d.starts_with(r)))
+            .map(|a| a.join(".karen").join("policies"))
+            .find(|p| p.is_dir() && !same_dir(p, user.as_deref()));
+        let (project, found_by) = match in_tree {
+            Some(p) => (Some(p), Some("in-tree")),
+            None => match repo.and_then(repo_pointer) {
+                Some(p) => (Some(p), Some("git-config")),
+                None => (None, None),
+            },
+        };
         Self {
             user,
             project,
             explicit: false,
+            found_by,
         }
     }
 
@@ -299,6 +322,82 @@ impl Roots {
             .or_else(|| self.user.clone())
             .unwrap_or_default()
     }
+}
+
+/// The repository's `karen.policies`, read from the config file in its common
+/// git directory, which a linked worktree reaches through its `.git` file and
+/// `commondir`. A relative value resolves against the main working tree; `~/`
+/// against the user's home.
+fn repo_pointer(worktree: &Path) -> Option<PathBuf> {
+    let dot_git = worktree.join(".git");
+    let common = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let text = std::fs::read_to_string(&dot_git).ok()?;
+        let gitdir = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
+        let gitdir = worktree.join(gitdir);
+        match std::fs::read_to_string(gitdir.join("commondir")) {
+            Ok(common) => lexical(&gitdir.join(common.trim())),
+            Err(_) => gitdir,
+        }
+    };
+    let config = std::fs::read_to_string(common.join("config")).ok()?;
+    let value = git_config_value(&config, "karen", "policies")?;
+    if value.starts_with("~/") {
+        return Some(crate::home::expand(&value));
+    }
+    let path = PathBuf::from(&value);
+    if path.is_absolute() {
+        return Some(path);
+    }
+    Some(common.parent().unwrap_or(worktree).join(path))
+}
+
+/// `path` with `.` and `..` resolved by name, so its parent is the real parent
+/// (`commondir` is usually `../..`).
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The last value of `section.key` in a git config file. Section and key match
+/// case-insensitively; subsections, includes and escapes beyond quotes are not
+/// read, which `karen.policies` never needs.
+fn git_config_value(config: &str, section: &str, key: &str) -> Option<String> {
+    let mut current = String::new();
+    let mut found = None;
+    for line in config.lines() {
+        let line = line.trim();
+        if let Some(header) = line.strip_prefix('[') {
+            current = header.trim_end_matches(']').trim().to_ascii_lowercase();
+            continue;
+        }
+        if current != section {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !name.trim().eq_ignore_ascii_case(key) {
+            continue;
+        }
+        let value = value.trim();
+        let value = match value.strip_prefix('"') {
+            Some(quoted) => quoted.split('"').next().unwrap_or(""),
+            None => value.split(['#', ';']).next().unwrap_or("").trim(),
+        };
+        found = Some(value.to_string());
+    }
+    found
 }
 
 fn same_dir(a: &Path, b: Option<&Path>) -> bool {
@@ -339,6 +438,7 @@ pub fn load(root: &Path) -> Result<PolicySet, LoadError> {
         user: Some(crate::home::user_policies()).filter(|p| p.is_dir()),
         project: Some(root.to_path_buf()),
         explicit: true,
+        found_by: Some("explicit"),
     })
 }
 
@@ -366,7 +466,13 @@ pub fn load_roots(roots: &Roots) -> Result<PolicySet, LoadError> {
             });
         }
     }
-    merge(layers, roots.primary())
+    let mut set = merge(layers, roots.primary())?;
+    set.found_by = roots.found_by.filter(|_| {
+        set.layers
+            .iter()
+            .any(|(layer, _)| matches!(layer, Layer::Project))
+    });
+    Ok(set)
 }
 
 /// One layer as read from disk, before merging.
@@ -521,6 +627,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf) -> Result<PolicySet, LoadErr
         config,
         root: primary,
         layers: roots,
+        found_by: None,
         issues,
         changes,
     })
@@ -738,7 +845,18 @@ mod tests {
             user: None,
             project: Some(root.to_path_buf()),
             explicit: true,
+            found_by: Some("explicit"),
         })
+    }
+
+    #[test]
+    fn git_config_value_reads_the_last_karen_policies() {
+        let config = "[core]\n\tpolicies = no\n[karen]\n\tpolicies = first\n[Karen]\n\tPolicies = \"C:/a b/p\" # note\n";
+        assert_eq!(
+            git_config_value(config, "karen", "policies").as_deref(),
+            Some("C:/a b/p")
+        );
+        assert_eq!(git_config_value("[core]\n", "karen", "policies"), None);
     }
 
     #[test]

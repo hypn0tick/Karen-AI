@@ -8,7 +8,7 @@ Karen merges three policy layers on every call, in a fixed order: built-in, user
 |---|---|---|
 | Built-in | Compiled into the binary | Gates no reasonable user objects to: Karen's own policy roots are not edited by the agents she judges (locked), no force-push to a default branch, no secrets in commands |
 | User | `<Karen home>/policies` | The user's own rules, in every project |
-| Project | `KAREN_POLICIES` if set, else the nearest `.karen/policies` at or above the working directory | Rules specific to one project |
+| Project | `--policies` or `KAREN_POLICIES` if set, else the nearest `.karen/policies` from the working directory up to the repository root, else the repository's `karen.policies` git setting | Rules specific to one project |
 
 Karen home is `~/.karen` on every platform (`KAREN_HOME` overrides it), beside the other agent tools' home directories (`~/.claude`, `~/.codex`). Everything Karen keeps lives there, split by kind so the policy folder can be versioned or synced alone:
 
@@ -18,6 +18,8 @@ Karen home is `~/.karen` on every platform (`KAREN_HOME` overrides it), beside t
 | `~/.karen/state/` | Session state (strikes, cached facts) |
 | `~/.karen/cache/` | Validation markers: which versions of each layer's files compiled cleanly |
 | `~/.karen/logs/` | Runtime plugin logs, such as the OpenCode bridge's fail-open log |
+
+The project layer is found from the session's working directory, never from how a runtime was set up, so a new worktree or a new agent cannot miss it. A checkout's own `.karen/policies` wins; above the repository root the walk stops, because a root there belongs to another project. A repository whose policies live outside its checkouts names them once with `git config karen.policies <path>`: git keeps that setting in the repository's common directory, which every linked worktree shares, and a relative path resolves against the main working tree. `karen validate` and `karen check` report `project_found_by` (`explicit`, `in-tree` or `git-config`).
 
 Each layer has exactly one discovery rule. A missing user or project layer is normal; the built-in layer is always present, so Karen never runs with nothing loaded. Every runtime calls the same binary, so Claude Code, Codex and OpenCode sessions see the same three layers.
 
@@ -50,5 +52,6 @@ Measured on Windows with 63 gates, reading and parsing every policy file costs a
 
 - Each merge rule, including a project that tries to disable or replace a locked gate (the gate stays enforced) and a reused id without `override` (validation error).
 - Discovery of each layer, and the built-in layer alone when no other layer exists.
+- A linked worktree finds the repository's `karen.policies` layer, a root above the repository is ignored, and a checkout's own root wins over the pointer.
 - An edited gate is enforced on the next call, and an edit that breaks a pattern is caught on the next call although the previous version validated.
 - Provenance in `karen check` and in evaluation output.

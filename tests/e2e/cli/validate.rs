@@ -25,7 +25,7 @@ fn karen_validates_human_output() {
     let env = TestEnv::new();
     let (code, stdout, _stderr) = env.run_karen(&["validate"]);
     assert_exit_code(code, 0);
-    assert!(stdout.contains("policies:"));
+    assert!(stdout.contains("project layer:"));
     assert!(stdout.contains("gates:"));
     assert!(stdout.contains("rules:"));
     assert!(stdout.contains("Next steps:"));

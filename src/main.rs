@@ -406,7 +406,18 @@ fn run_validate(args: ValidateArgs, verbose: bool) -> i32 {
         return EXIT_OK;
     }
 
-    println!("policies: {}", set.root.display());
+    for (layer, root) in &set.layers {
+        match (layer, set.found_by) {
+            (karen::policy::Layer::Project, Some(how)) => {
+                println!(
+                    "{} layer: {} (found by {how})",
+                    layer.name(),
+                    root.display()
+                );
+            }
+            _ => println!("{} layer: {}", layer.name(), root.display()),
+        }
+    }
     println!("gates: {}  rules: {}", set.gates.len(), set.rules.len());
     if verbose {
         for gate in &set.gates {
@@ -454,7 +465,10 @@ fn run_evaluate(args: &EvaluateArgs) -> i32 {
         }
     };
 
-    let roots = policy_roots(args.policies.clone(), None);
+    let roots = policy_roots(
+        args.policies.clone(),
+        request.cwd.as_deref().map(std::path::Path::new),
+    );
     let set = match load_policies(&roots, &args.out) {
         Ok(set) => set,
         Err(code) => return code,
@@ -698,6 +712,7 @@ fn policy_json(set: &PolicySet) -> Value {
             .iter()
             .map(|(layer, root)| json!({ "layer": layer.name(), "root": root.display().to_string() }))
             .collect::<Vec<_>>(),
+        "project_found_by": set.found_by,
         "changes": set
             .changes
             .iter()
