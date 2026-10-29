@@ -1257,10 +1257,37 @@ function karen(payload, part) {
   try { return JSON.parse(run.stdout || "{}"); } catch { return {}; }
 }
 
-export const KarenAI = async ({ directory }) => {
+// OpenCode has no Stop hook: an idle session is reviewed as a Stop, and a block is
+// sent back into the session as a prompt, which is how OpenCode keeps a turn going.
+const lastAssistant = (messages) => {
+  const m = [...(messages ?? [])].reverse().find((x) => x?.info?.role === "assistant");
+  return m ? { id: m.info.id, text: (m.parts ?? []).filter((p) => p.type === "text").map((p) => p.text).join("\n") } : null;
+};
+
+export const KarenAI = async ({ directory, client }) => {
   const rules = new Map();
   const notices = new Map();
+  const reviewed = new Map(); // session -> last assistant message id already reviewed
+  const held = new Set(); // sessions whose previous stop Karen blocked
   return {
+    event: async ({ event }) => {
+      const idle = event?.type === "session.idle" || (event?.type === "session.status" && event.properties?.status?.type === "idle");
+      const sid = event?.properties?.sessionID;
+      if (!idle || !sid || !client?.session) return;
+      let last = null;
+      try { last = lastAssistant((await client.session.messages({ path: { id: sid } }))?.data); } catch { return; }
+      if (!last || reviewed.get(sid) === last.id) return;
+      reviewed.set(sid, last.id);
+      // An inline child (task tool) has a parentID and stops as a subagent, as in Claude Code. A lane started
+      // in its own terminal is a top-level session and gets Stop: scope gates to roles with conditions (cwd).
+      let parent = null;
+      try { parent = (await client.session.get({ path: { id: sid } }))?.data?.parentID ?? null; } catch {}
+      const out = karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: held.has(sid), last_assistant_message: last.text, ...(parent ? { agent_id: sid } : {}) });
+      if (out.decision !== "block") { held.delete(sid); return; }
+      held.add(sid);
+      // Not awaited: the prompt resolves only after the model replies, and the event loop must not wait for it.
+      client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${out.reason ?? "blocked by policy"}` }] } }).catch(() => {});
+    },
     "experimental.chat.system.transform": async (input, output) => {
       const sid = input.sessionID ?? "unknown";
       if (!rules.has(sid)) {
