@@ -16,7 +16,7 @@ Karen home is `~/.karen` on every platform (`KAREN_HOME` overrides it), beside t
 |---|---|
 | `~/.karen/policies/` | The user layer: `config.toml`, `gates/`, `rules/` |
 | `~/.karen/state/` | Session state (strikes, cached facts) |
-| `~/.karen/cache/` | The merged, compiled policy |
+| `~/.karen/cache/` | Validation markers: which versions of each layer's files compiled cleanly |
 | `~/.karen/logs/` | Runtime plugin logs, such as the OpenCode bridge's fail-open log |
 
 Each layer has exactly one discovery rule. A missing user or project layer is normal; the built-in layer is always present, so Karen never runs with nothing loaded. Every runtime calls the same binary, so Claude Code, Codex and OpenCode sessions see the same three layers.
@@ -29,7 +29,7 @@ Gates are merged by `id`, layer by layer.
 2. **Replace.** A later layer that defines an existing id must set `"override": true`; the new definition replaces the old one whole. Fields are never merged: a gate is always readable in one place. A reused id without the flag is a validation error.
 3. **Disable.** A layer's `config.toml` lists `disable = ["gate-id", ...]` by exact id. An id that matches nothing is a warning.
 4. **Lock.** A gate with `"locked": true` cannot be replaced or disabled by a later layer. At hook time the offending override or disable is dropped, the locked gate stays enforced, and the session sees a warning; `karen validate` reports it as an error. A lock violation never becomes a load failure, because load failures fail open: otherwise one malformed file in a project would switch every protection off.
-5. **Rules.** Each layer's rule files are injected in layer order; a same-named file in a later layer replaces the earlier one. `rules.max_chars` bounds the total.
+5. **Rules.** Each layer's rule files are injected in layer order; a same-named file in a later layer replaces the earlier one.
 6. **Config.** A later layer wins per key; list values (`facts.tools`) are unioned.
 
 ## Provenance
@@ -38,7 +38,7 @@ Gates are merged by `id`, layer by layer.
 
 ## Cost
 
-Parsing three layers on every hook call would add to the load cost that already dominates a call (about 46 ms of about 60 ms on Windows with 54 gates). The merged, validated policy is therefore cached in `~/.karen/cache/`, keyed by the path, size and modification time of every file in every layer, and rebuilt only when one changes; regexes compile on first use by an applicable gate. The resident supervisor (ROADMAP) remains the path below one millisecond.
+Measured on Windows with 63 gates, reading and parsing every policy file costs about 1 ms and compiling every regex about 55 ms of a 60 ms call. So the files are re-read on every call, which keeps hot reload exact, and regexes compile only when a gate that applies to the event evaluates them, with conditions short-circuiting. A layer's patterns are validated once per version of its files: a marker in `~/.karen/cache/`, keyed by the path, size and modification time of every file in that layer, records a clean validation, and any edit validates again; `karen validate` always compiles everything. Result: about 34 ms for a Bash call and 29 ms for a Stop with 65 gates, of which about 9 ms is process start. The rest is compiling the patterns that call needs, paid again by every fresh process; the resident supervisor (ROADMAP) compiles once and is the path below one millisecond.
 
 ## Not included
 
@@ -50,5 +50,5 @@ Parsing three layers on every hook call would add to the load cost that already 
 
 - Each merge rule, including a project that tries to disable or replace a locked gate (the gate stays enforced) and a reused id without `override` (validation error).
 - Discovery of each layer, and the built-in layer alone when no other layer exists.
-- Cache invalidation when any file in any layer changes, is added or is removed.
+- An edited gate is enforced on the next call, and an edit that breaks a pattern is caught on the next call although the previous version validated.
 - Provenance in `karen check` and in evaluation output.

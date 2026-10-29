@@ -1,9 +1,8 @@
 # Build artifacts
 /target/
 
-# Personal rules - DO NOT COMMIT
-# These are user-specific and should be generated per-installation
-/policies/
+# Scratch project layer - DO NOT COMMIT
+/.karen/
 
 # Local-only tooling and scratch systems — kept out of the public project.
 # The Karen who knows exactly who belongs in the family portrait.

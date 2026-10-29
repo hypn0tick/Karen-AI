@@ -1,6 +1,6 @@
 # Example Gates — the starter pack
 
-**Fifteen heavily-commented gates: twelve fundamentals, three advanced merges. Plus a minimal `config.toml` and one example rule.** They are not the author's rules — they are his lectures, yours to assign. Copy what you like into your `policies/gates/`, adjust to taste, and run `karen validate`. The Karen who ships the desk, the curriculum, and none of her opinions about your house.
+**Fifteen heavily-commented gates: twelve fundamentals, three advanced merges. Plus a minimal `config.toml` and one example rule.** They are not the author's rules — they are his lectures, yours to assign. Copy what you like into `~/.karen/policies/gates/` (every project) or a project's `.karen/policies/gates/`, adjust to taste, and run `karen validate`. The Karen who ships the desk, the curriculum, and none of her opinions about your house.
 
 Two things worth noticing before you copy anything:
 

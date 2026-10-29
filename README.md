@@ -9,7 +9,7 @@
 [![Policy](https://img.shields.io/badge/policy-JSON%2FJSONC%2FJSON5-brightgreen)]()
 [![Manager](https://img.shields.io/badge/manager-contacted-red)]()
 
-> The "Karen" you'll invite to every party. This one judges a call against YOUR policy in under a millisecond, but a hook starts her fresh each time, so the honest stopwatch reads about 60 ms per call on Windows with 54 gates, most of it spent reading and compiling the policy (source: hyperfine, which she checked twice).
+> The "Karen" you'll invite to every party. This one judges a call against YOUR policy in under a millisecond, but a hook starts her fresh each time, so the honest stopwatch reads about 30 ms per call on Windows with 65 gates: process start, then compiling only the patterns that call actually needs (source: hyperfine, which she checked twice).
 
 Karen-AI is a guardrails engine for AI coding agents. She watches every tool call your agent makes, reads the JSON you gave her, and says "no" before the harness even blinks.
 
@@ -41,8 +41,10 @@ Karen-AI exists so you can write the rules once, in files a human can read, have
 # Build
 cargo build --release
 
-# Create your policy root (config.toml is optional — the defaults are sensible)
-mkdir -p policies/gates policies/rules
+# Your rules for every project (config.toml is optional — the defaults are sensible)
+mkdir -p ~/.karen/policies/gates ~/.karen/policies/rules
+# ...or for one project, from its root
+mkdir -p .karen/policies/gates .karen/policies/rules
 
 # Validate policies
 ./target/release/karen validate
@@ -134,7 +136,17 @@ policies/
 
 (Skill routing and tool redirection directories are planned, not implemented — the loader reads `rules/` and `gates/` only. The Karen who refuses to document furniture that hasn't been delivered.)
 
-She finds your policy root in this order: `$KAREN_POLICIES` if set, then `./policies` in your working directory, then `$CLAUDE_PLUGIN_ROOT/policies`, then any `policies/` above the binary. Where you're standing outranks where she's installed. The Karen who checks the street before the building — your project is the street. If she finds none, `karen hook` still lets the call through, so a broken install never bricks your agent, but it says so: the response carries a `systemMessage` saying no policy is enforced and why. The OpenCode plugin passes that on once per session, in the first tool result or, for a session that only idles, as a prompt. A guard who is off duty tells you she is off duty. When the OpenCode plugin itself cannot reach her (the binary fails to start, times out or exits non-zero, a session read fails, or a hold prompt is not delivered), it still lets the session through and writes one line per failure to `$KAREN_LOG`, by default `karen-opencode.log` in the temp directory, so a stop that was not held can be explained from the log.
+She loads three layers on every call and merges them by gate id:
+
+| Layer | Where | For |
+|---|---|---|
+| Built-in | compiled into the binary | the few gates nobody objects to: no force-push to `main`/`master`, no credentials in a command line |
+| User | `~/.karen/policies` | your rules, in every project and every runtime |
+| Project | `--policies`, else `$KAREN_POLICIES`, else the nearest `.karen/policies` at or above the working directory | one project's rules |
+
+A later layer adds gates freely. To replace a gate from an earlier layer it says so with `"override": true`; reusing an id without it is refused, so nothing is shadowed by accident. To switch one off, its `config.toml` lists `[policy] disable = ["gate-id"]`. A gate marked `"locked": true` survives every later layer: a project that tries to replace or disable it gets refused, the gate stays enforced, and the session is told once. Refusals never fail the load, because a load failure lets everything through. `karen validate` fails on them and reports every gate's layer and source file; `karen evaluate` names the layer of each gate that fired. Config keys merge the same way: a later layer wins per key, lists are unioned. Everything she keeps lives under `~/.karen` (`KAREN_HOME` moves it): `policies/`, `state/`, `cache/`, `logs/`. The Karen who checks the street, the building and the house rules, in that order.
+
+If an explicitly named project root does not exist, `karen hook` still lets the call through, so a broken install never bricks your agent, but it says so: the response carries a `systemMessage` saying no policy is enforced and why. The OpenCode plugin passes that on once per session, in the first tool result or, for a session that only idles, as a prompt. A guard who is off duty tells you she is off duty. When the OpenCode plugin itself cannot reach her (the binary fails to start, times out or exits non-zero, a session read fails, or a hold prompt is not delivered), it still lets the session through and writes one line per failure to `$KAREN_LOG`, by default `~/.karen/logs/karen-opencode.log`, so a stop that was not held can be explained from the log.
 
 ---
 
@@ -286,9 +298,9 @@ The adapter includes the modification in the protocol response. Whether the runt
 ┌─────────────────────────────────────────────┐
 │  Karen-AI                                    │
 │  • reads your JSON/JSONC/JSON5              │
-│  • compiles regex once, runs forever        │
+│  • compiles regex when a call needs it      │
 │  • tracks strikes per session               │
-│  • writes to ~/.cache/karen                 │
+│  • keeps everything in ~/.karen             │
 │  The Karen who decides / The Karen who remembers / The Karen who has the receipts │
 └─────────────────────────────────────────────┘
 ```
@@ -328,7 +340,7 @@ gates_dir = "gates"
 
 [state]
 backend = "auto"          # auto | memory | file
-file_dir = "~/.cache/karen"  # The Karen who remembers
+# file_dir = "~/.karen/state"  # the default; The Karen who remembers
 ```
 
 ---

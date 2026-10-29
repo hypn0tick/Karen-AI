@@ -20,7 +20,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 
 # Run the binary manually
-mkdir -p policies/gates policies/rules  # scratch policy root (gitignored — she keeps it out of your diffs)
+mkdir -p .karen/policies/gates .karen/policies/rules  # scratch project layer (gitignored — she keeps it out of your diffs)
 ./target/release/karen validate
 ./target/release/karen check
 ```
@@ -76,7 +76,7 @@ cargo test
 
 # Quick validation
 cargo build --release
-mkdir -p policies/gates policies/rules   # scratch policy root (gitignored)
+mkdir -p .karen/policies/gates .karen/policies/rules   # scratch project layer (gitignored)
 ./target/release/karen validate
 ./target/release/karen check
 ```
