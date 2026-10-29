@@ -42,7 +42,7 @@ A hook is the runtime calling her; she should not have to wait to be called. Kar
 
 ## Layered policy roots
 
-One root per session meant each project copied the same gates and kept them in sync by memory, and a user's own rules never reached a session whose runtime pointed at a project. Karen merges three layers instead: built-in (compiled into the binary), user (`<config dir>/karen/policies`) and project (`KAREN_POLICIES` or the nearest `.karen/policies`), by gate id, with explicit overrides, explicit disables, and locks a later layer cannot remove. The merged policy is cached so the extra layers cost nothing per call. Design: [docs/layered-roots.md](docs/layered-roots.md). **Status:** designed; implementation next.
+One root per session meant each project copied the same gates and kept them in sync by memory, and a user's own rules never reached a session whose runtime pointed at a project. Karen merges three layers instead: built-in (compiled into the binary), user (`~/.karen/policies`, in the Karen home that also holds her state, cache and logs) and project (`KAREN_POLICIES` or the nearest `.karen/policies`), by gate id, with explicit overrides, explicit disables, and locks a later layer cannot remove. The merged policy is cached so the extra layers cost nothing per call. Design: [docs/layered-roots.md](docs/layered-roots.md). **Status:** designed; implementation next.
 
 ## Starter gate pack
 

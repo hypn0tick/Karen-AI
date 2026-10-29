@@ -7,8 +7,17 @@ Karen merges three policy layers on every call, in a fixed order: built-in, user
 | Layer | Found at | Holds |
 |---|---|---|
 | Built-in | Compiled into the binary | Gates no reasonable user objects to: Karen's own policy roots are not edited by the agents she judges (locked), no force-push to a default branch, no secrets in commands |
-| User | `KAREN_USER_POLICIES` if set, else `<config dir>/karen/policies` (`%APPDATA%\karen\policies` on Windows, `~/.config/karen/policies` on Linux, `~/Library/Application Support/karen/policies` on macOS) | The user's own rules, in every project |
+| User | `<Karen home>/policies` | The user's own rules, in every project |
 | Project | `KAREN_POLICIES` if set, else the nearest `.karen/policies` at or above the working directory | Rules specific to one project |
+
+Karen home is `~/.karen` on every platform (`KAREN_HOME` overrides it), beside the other agent tools' home directories (`~/.claude`, `~/.codex`). Everything Karen keeps lives there, split by kind so the policy folder can be versioned or synced alone:
+
+| Path | Holds |
+|---|---|
+| `~/.karen/policies/` | The user layer: `config.toml`, `gates/`, `rules/` |
+| `~/.karen/state/` | Session state (strikes, cached facts) |
+| `~/.karen/cache/` | The merged, compiled policy |
+| `~/.karen/logs/` | Runtime plugin logs, such as the OpenCode bridge's fail-open log |
 
 Each layer has exactly one discovery rule. A missing user or project layer is normal; the built-in layer is always present, so Karen never runs with nothing loaded. Every runtime calls the same binary, so Claude Code, Codex and OpenCode sessions see the same three layers.
 
@@ -29,13 +38,13 @@ Gates are merged by `id`, layer by layer.
 
 ## Cost
 
-Parsing three layers on every hook call would add to the load cost that already dominates a call (about 46 ms of about 60 ms on Windows with 54 gates). The merged, validated policy is therefore cached in the state directory, keyed by the path, size and modification time of every file in every layer, and rebuilt only when one changes; regexes compile on first use by an applicable gate. The resident supervisor (ROADMAP) remains the path below one millisecond.
+Parsing three layers on every hook call would add to the load cost that already dominates a call (about 46 ms of about 60 ms on Windows with 54 gates). The merged, validated policy is therefore cached in `~/.karen/cache/`, keyed by the path, size and modification time of every file in every layer, and rebuilt only when one changes; regexes compile on first use by an applicable gate. The resident supervisor (ROADMAP) remains the path below one millisecond.
 
 ## Not included
 
 - `extends` or include lists. Add them when a second need beyond the three layers appears.
 - A team or organisation layer.
-- Compatibility with the single-root search (`./policies`, `$CLAUDE_PLUGIN_ROOT/policies`, `policies/` above the binary): Karen has no users depending on it.
+- Compatibility with the single-root search (`./policies`, `$CLAUDE_PLUGIN_ROOT/policies`, `policies/` above the binary) or the old locations (`~/.cache/karen`, `%TEMP%/karen-opencode.log`): Karen has no users depending on them.
 
 ## Tests
 
