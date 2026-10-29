@@ -251,7 +251,7 @@ A gate can read what the session's runtime actually has instead of someone remem
 }
 ```
 
-The Karen who remembers. Strike one: denied, with an explanation and a lecture. Strike two: allowed, with the shorter explanation and a nudge toward the right tool — she has made her point, and repeating herself is what the manager is for. Strike three: there is no third strike. She has already moved on. (She already called your manager.) Add `"reset_on_compact": true` to the state and a compaction wipes the slate for that key: a nudge that taught something the compaction then dropped gets to teach it once more, so "once per session" becomes "once per context".
+The Karen who remembers. Strike one: denied, with an explanation and a lecture. Strike two: allowed, with the shorter explanation and a nudge toward the right tool — she has made her point, and repeating herself is what the manager is for. Strike three: there is no third strike. She has already moved on. (She already called your manager.) Add `"reset_on_compact": true` to the state and a compaction wipes the slate for that key: a nudge that taught something the compaction then dropped gets to teach it once more, so "once per session" becomes "once per context". `"track"` says what the count belongs to: `"session"` (the default) teaches once per session, and `"input"` counts each distinct tool input on its own, so every new command is held once and the same command retried goes through with the warning, which suits a check the agent has to confirm per call (a heredoc full of backslashes) rather than learn once. An input-tracked count is not wiped by `reset_on_compact`.
 
 ---
 

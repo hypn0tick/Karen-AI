@@ -261,3 +261,38 @@ fn karen_state_reset_on_compact_lets_a_nudge_fire_again() {
     let (_, kept, _) = env.run_hook(&call("per-session"), &[]);
     assert_hook_warned_retry(&kept, Some("loaded"));
 }
+
+#[test]
+#[serial]
+fn karen_counts_input_tracked_strikes_per_command() {
+    let gate = r#"{ "id": "heredoc", "event": "PreToolUse", "tool": "Bash",
+        "match": { "all": [ { "type": "command_contains", "value": "<<" } ] },
+        "action": { "type": "deny_once_then_warn", "first_reason": "held once", "second_reason": "retry passes" },
+        "state": { "track": "input", "key": "heredoc", "max_strikes": 2 } }"#;
+    let env = TestEnv::with_config(
+        FILE_CONFIG,
+        &[crate::e2e::common::fixtures::GateFixture {
+            file: "heredoc.json",
+            content: gate,
+        }],
+        &[],
+    );
+    let call = |command: &str| {
+        let input = json!({ "hook_event_name": "PreToolUse", "session_id": "input-track", "tool_name": "Bash", "tool_input": { "command": command } });
+        let (code, stdout, _) = env.run_hook(&input.to_string(), &[]);
+        assert_exit_code(code, 0);
+        stdout
+    };
+    assert_hook_deny_once_first(&call("cat <<EOF one"), Some("held once"));
+    assert_hook_warned_retry(&call("cat <<EOF one"), Some("retry passes"));
+    // A new command is held again, which a session-tracked gate would not do.
+    assert_hook_deny_once_first(&call("cat <<EOF two"), Some("held once"));
+
+    std::fs::write(
+        env.policies_dir.join("gates").join("heredoc.json"),
+        gate.replace("\"input\"", "\"per-turn\""),
+    )
+    .unwrap();
+    let (code, stdout, _) = env.run_karen(&["validate", "--json"]);
+    assert_ne!(code, 0, "an unknown track is a load error: {stdout}");
+}

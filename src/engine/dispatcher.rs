@@ -198,8 +198,14 @@ impl Engine {
             } => {
                 let spec = gate.state.as_ref();
                 let key = spec.map_or(gate.id.as_str(), |s| s.key.as_str());
+                let key = match spec.map(|s| s.track) {
+                    Some(crate::policy::gate::Track::Input) => {
+                        format!("{key}:{:016x}", fnv1a(req.raw.get("tool_input")))
+                    }
+                    _ => key.to_string(),
+                };
                 let max = spec.map_or(2, |s| s.max_strikes.max(1));
-                let strikes = self.state.increment(&req.session_id, key);
+                let strikes = self.state.increment(&req.session_id, &key);
 
                 if strikes < u64::from(max) {
                     // First strike: the denial and the lecture ship together — first_reason up front, the coaching in a Notice. The Karen who never wastes an opportunity to explain herself.
@@ -291,4 +297,13 @@ fn expand(template: &str, gate: &Gate, req: &EngineRequest) -> String {
         .replace("{gate}", &gate.id)
         .replace("{tool}", req.tool_name.as_deref().unwrap_or("unknown"))
         .replace("{command}", req.command().unwrap_or(""))
+}
+
+/// FNV-1a over a value's JSON text: a strike key that is stable across runs and
+/// builds, which `std`'s hasher does not promise.
+fn fnv1a(value: Option<&serde_json::Value>) -> u64 {
+    let text = value.map(ToString::to_string).unwrap_or_default();
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }

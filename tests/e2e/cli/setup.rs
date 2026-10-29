@@ -499,3 +499,47 @@ fn karen_setup_removes_only_her_own_legacy_hooks_json() {
         foreign
     );
 }
+
+#[test]
+#[serial]
+fn karen_installed_in_her_home_pins_her_own_path_in_hooks() {
+    let env = TestEnv::new();
+    let bin = env.home_dir.join(".karen").join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let installed = bin.join(env.karen_binary.file_name().unwrap());
+    fs::copy(&env.karen_binary, &installed).unwrap();
+    let project = env.temp_dir.path().join("pinned");
+    fs::create_dir_all(&project).unwrap();
+
+    for runtime in ["claude", "opencode"] {
+        let out = std::process::Command::new(&installed)
+            .env("HOME", &env.home_dir)
+            .env_remove("KAREN_HOME")
+            .args(["setup", "--project", runtime])
+            .current_dir(&project)
+            .output()
+            .unwrap();
+        assert_exit_code(out.status.code().unwrap_or(-1), 0);
+    }
+    let shown = fs::canonicalize(&installed).unwrap().display().to_string();
+    let shown = shown
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&shown)
+        .replace('\\', "/");
+    let settings = fs::read_to_string(project.join(".claude").join("settings.json")).unwrap();
+    assert!(
+        settings.contains(&format!("\\\"{shown}\\\" hook --adapter claude-classic")),
+        "{settings}"
+    );
+    let plugin = fs::read_to_string(
+        project
+            .join(".opencode")
+            .join("plugins")
+            .join("karen-ai.js"),
+    )
+    .unwrap();
+    assert!(
+        plugin.contains(&format!("process.env.KAREN_BIN || \"{shown}\"")),
+        "{plugin}"
+    );
+}

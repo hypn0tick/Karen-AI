@@ -1096,7 +1096,14 @@ fn plan_setup_action(runtime: SetupRuntime, project: bool) -> SetupAction {
                 global,
                 PathBuf::from(".opencode"),
                 "plugins/karen-ai.js",
-                OPENCODE_PLUGIN_JS.to_string(),
+                match pinned_binary() {
+                    Some(path) => OPENCODE_PLUGIN_JS.replacen(
+                        "process.env.KAREN_BIN || \"karen\"",
+                        &format!("process.env.KAREN_BIN || {}", Value::from(path)),
+                        1,
+                    ),
+                    None => OPENCODE_PLUGIN_JS.to_string(),
+                },
             )
         }
     };
@@ -1489,8 +1496,30 @@ export const KarenAI = async ({ directory, client }) => {
 };
 "#;
 
+/// The binary a hook command names. Installed in her home (`<Karen home>/bin`),
+/// she pins her own path, so a hook never depends on PATH; anywhere else (a
+/// build directory, a package manager's bin) she writes the bare name.
+fn pinned_binary() -> Option<String> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let home = karen::home::karen_home().join("bin").canonicalize().ok()?;
+    if !exe.starts_with(&home) {
+        return None;
+    }
+    let shown = exe.display().to_string();
+    let shown = shown.strip_prefix(r"\\?\").unwrap_or(&shown);
+    Some(shown.replace('\\', "/"))
+}
+
+/// A hook command's binary, as it sits inside a JSON string.
+fn hook_binary() -> String {
+    pinned_binary().map_or_else(
+        || (if cfg!(windows) { "karen.exe" } else { "karen" }).to_string(),
+        |path| format!("\\\"{path}\\\""),
+    )
+}
+
 fn claude_hooks_json() -> String {
-    let karen = if cfg!(windows) { "karen.exe" } else { "karen" };
+    let karen = hook_binary();
     format!(
         "{{
   \"_comment\": \"Claude Code hook registration for Karen-AI. Rule injection (karen hook --part N) and gate enforcement (karen hook) both use the Rust binary, which evaluates JSON/JSONC/JSON5 gates. This file is installed by `karen setup claude` — no manual editing of settings.json required.\",
@@ -1534,7 +1563,7 @@ fn claude_hooks_json() -> String {
 }
 
 fn codex_hooks_json() -> String {
-    let karen = if cfg!(windows) { "karen.exe" } else { "karen" };
+    let karen = hook_binary();
     format!(
         "{{
   \"_comment\": \"Codex hook registration for Karen-AI. Rule injection (karen hook --part N) and gate enforcement (karen hook) both use the Rust binary, which evaluates JSON/JSONC/JSON5 gates. This file is installed by `karen setup codex` — no manual editing of Codex config required. Codex auto-discovers hooks from .codex-plugin/plugin.json.\",

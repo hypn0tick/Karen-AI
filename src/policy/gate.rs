@@ -164,8 +164,8 @@ pub enum ActionDef {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateSpec {
-    #[serde(default = "default_track")]
-    pub track: String,
+    #[serde(default)]
+    pub track: Track,
     pub key: String,
     #[serde(default = "default_max_strikes")]
     pub max_strikes: u32,
@@ -175,8 +175,16 @@ pub struct StateSpec {
     pub reset_on_compact: bool,
 }
 
-fn default_track() -> String {
-    "session".into()
+/// What a strike count belongs to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Track {
+    /// One count per session: the nudge teaches once, then warns.
+    #[default]
+    Session,
+    /// One count per distinct tool input: each new command is held once, and
+    /// the same command retried passes with the warning.
+    Input,
 }
 
 const fn default_max_strikes() -> u32 {
