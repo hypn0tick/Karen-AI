@@ -204,3 +204,60 @@ fn karen_verifies_injector_dedup_same_session() {
         "re-delivery of same part must be suppressed"
     );
 }
+
+#[test]
+#[serial]
+fn karen_state_reset_on_compact_lets_a_nudge_fire_again() {
+    // The Karen who repeats herself only when you have actually forgotten: a
+    // nudge with reset_on_compact holds once, lets you pass, and after a
+    // compaction holds once more. One without it stays quiet.
+    const PER_CONTEXT: &str = r#"{
+  "id": "per-context", "event": "PreToolUse", "priority": 10,
+  "match": { "all": [{ "type": "command_regex", "pattern": "per-context-test" }] },
+  "action": { "type": "deny_once_then_warn", "first_reason": "load it", "second_reason": "loaded" },
+  "state": { "key": "per-context", "max_strikes": 2, "reset_on_compact": true }
+}"#;
+    const PER_SESSION: &str = r#"{
+  "id": "per-session", "event": "PreToolUse", "priority": 10,
+  "match": { "all": [{ "type": "command_regex", "pattern": "per-session-test" }] },
+  "action": { "type": "deny_once_then_warn", "first_reason": "load it", "second_reason": "loaded" },
+  "state": { "key": "per-session", "max_strikes": 2 }
+}"#;
+    let env = TestEnv::with_config(
+        crate::e2e::common::DEFAULT_CONFIG,
+        &[
+            crate::e2e::common::GateFixture {
+                file: "per-context.json",
+                content: PER_CONTEXT,
+            },
+            crate::e2e::common::GateFixture {
+                file: "per-session.json",
+                content: PER_SESSION,
+            },
+        ],
+        &[],
+    );
+    let call = |id: &str| {
+        json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "compact-session",
+            "tool_name": "Bash",
+            "tool_input": { "command": format!("{id}-test") }
+        })
+        .to_string()
+    };
+    for id in ["per-context", "per-session"] {
+        let (_, first, _) = env.run_hook(&call(id), &[]);
+        assert_hook_deny(&first, Some("load it"));
+        let (_, second, _) = env.run_hook(&call(id), &[]);
+        assert_hook_warned_retry(&second, Some("loaded"));
+    }
+    let compact = json!({ "hook_event_name": "PostCompact", "session_id": "compact-session" });
+    let (code, _, _) = env.run_hook(&compact.to_string(), &[]);
+    assert_exit_code(code, 0);
+
+    let (_, again, _) = env.run_hook(&call("per-context"), &[]);
+    assert_hook_deny(&again, Some("load it"));
+    let (_, kept, _) = env.run_hook(&call("per-session"), &[]);
+    assert_hook_warned_retry(&kept, Some("loaded"));
+}

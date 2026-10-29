@@ -129,6 +129,10 @@ pub struct StateSpec {
     pub key: String,
     #[serde(default = "default_max_strikes")]
     pub max_strikes: u32,
+    /// Forget this key's strikes when the session compacts. A nudge that taught
+    /// something the compaction then dropped gets to teach it again.
+    #[serde(default)]
+    pub reset_on_compact: bool,
 }
 
 fn default_track() -> String {

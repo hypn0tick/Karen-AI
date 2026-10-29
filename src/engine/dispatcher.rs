@@ -76,14 +76,21 @@ impl Engine {
         let mut ask: Option<Action> = None;
         let mut modify: Option<Action> = None;
 
-        if matches!(req.event, Event::PostCompact) {
-            injector::invalidate(self.state.as_ref(), &req.session_id);
-        }
-
         let policies = self
             .policies
             .read()
             .expect("policy lock poisoned — she does not freeze mid-ruling");
+
+        if matches!(req.event, Event::PostCompact) {
+            injector::invalidate(self.state.as_ref(), &req.session_id);
+            // Compaction drops what a nudge taught, so gates that ask get to nudge once
+            // more. The Karen who repeats herself only when you have actually forgotten.
+            for spec in policies.gates.iter().filter_map(|g| g.state.as_ref()) {
+                if spec.reset_on_compact {
+                    self.state.remove(&req.session_id, &spec.key);
+                }
+            }
+        }
 
         for gate in Self::applicable(&policies, req) {
             if !gate.matcher.matches(req) {
