@@ -286,6 +286,7 @@ fn run_hook(adapter: Adapter, policies: Option<PathBuf>, part: Option<usize>) ->
     }
 
     let state = state_for(&set);
+    karen::engine::facts::enrich(&set, state.as_ref(), &mut request);
     let engine = Engine::new(set, state);
     let response = engine.dispatch(&request);
 
@@ -379,7 +380,7 @@ fn run_evaluate(args: &EvaluateArgs) -> i32 {
         Err(code) => return code,
     };
 
-    let request = match normalize(args.adapter, raw) {
+    let mut request = match normalize(args.adapter, raw) {
         Ok(request) => request,
         Err(error) => {
             return fail(
@@ -402,6 +403,7 @@ fn run_evaluate(args: &EvaluateArgs) -> i32 {
     // but writes nothing, so rehearsing can never eat your only warning.
     // The Karen who lets you practice your apology without filing it.
     let state = Box::new(ReadOnlyStore::new(state_for(&set)));
+    karen::engine::facts::enrich(&set, state.as_ref(), &mut request);
 
     let engine = Engine::new(set, state);
     let response = engine.dispatch(&request);
@@ -1266,7 +1268,9 @@ const toolName = (tool) => TOOL_NAMES[tool] ?? (tool ? tool[0].toUpperCase() + t
 function karen(payload, part) {
   const args = ["hook", "--adapter", "claude-classic"];
   if (part) args.push("--part", String(part));
-  const run = spawnSync(KAREN, args, { input: JSON.stringify(payload), encoding: "utf8", timeout: 10000, windowsHide: true });
+  // The runtime is a fact only the caller knows; Karen reads the rest (MCP servers, tools, git) herself.
+  const facts = { runtime: "opencode", ...(payload.facts ?? {}) };
+  const run = spawnSync(KAREN, args, { input: JSON.stringify({ ...payload, facts }), encoding: "utf8", timeout: 10000, windowsHide: true });
   const sid = payload.session_id;
   if (run.error) { fail(`spawn ${KAREN} on ${payload.hook_event_name}`, sid, run.error); return {}; }
   if (run.status !== 0) { fail(`exit ${run.status} on ${payload.hook_event_name}`, sid, run.stderr || "(no stderr)"); return {}; }

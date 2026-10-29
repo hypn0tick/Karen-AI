@@ -181,6 +181,23 @@ The Karen who decides. Four answers: `allow`, `deny`, `ask`, `modify`. No `maybe
 | `file_older_than`   | The file at `path` is missing or was last modified more than `seconds` ago (`~/` is home; relative paths resolve against `cwd`), so a marker the finished chore touches makes a gate "due again" | checks when you last did it |
 | `always`            | Matches everything                   | doesn't miss a thing |
 
+### Environment facts
+
+A gate can read what the session's runtime actually has instead of someone remembering it, through `field_equals` or `field_regex` on `facts.<name>`. She collects a fact only when a gate that applies to the current event names it, and a fact the runtime already put in the payload wins.
+
+| Fact | Value | Source |
+|------|-------|--------|
+| `facts.runtime` | `claude`, `codex`, `opencode` or `unknown` | the OpenCode plugin says so; otherwise the transcript path |
+| `facts.mcp_servers` | comma-separated names of the enabled MCP servers | the runtime's own config files (Claude Code: `~/.claude.json`, the project's `.mcp.json`, enabled plugins; Codex: `~/.codex/config.toml`; OpenCode: its global, project and `OPENCODE_CONFIG` files). Names only: server definitions can hold keys, and a gate never needs them |
+| `facts.tools` | comma-separated names from `[facts] tools` found on `PATH` | `PATH` |
+| `facts.git_uncommitted` | `git status --porcelain` for `cwd`, first 50 lines | git |
+
+`runtime`, `mcp_servers` and `tools` are cached for the session; `git_uncommitted` is read on every call that needs it. A gate that should only exist where a server does, for example:
+
+```json
+{ "type": "field_regex", "field": "facts.mcp_servers", "pattern": "(^|,)brave-search(,|$)" }
+```
+
 ### Actions
 
 | Type                   | Meaning                  | The Karen Who...                             |

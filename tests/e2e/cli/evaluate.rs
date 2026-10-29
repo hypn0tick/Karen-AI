@@ -390,3 +390,67 @@ fn karen_evaluate_file_older_than_counts_a_missing_or_stale_marker_as_due() {
         .unwrap();
     assert_evaluate_action(&decide(), "deny");
 }
+
+#[test]
+#[serial]
+fn karen_evaluate_facts_name_the_mcp_servers_and_uncommitted_work() {
+    // The Karen who checks what's in the building before quoting the fire code:
+    // a gate keyed on facts.mcp_servers fires only where the runtime really has
+    // that server, never sees its config values, and facts.git_uncommitted
+    // tells a dirty tree from a clean one. Only this test's gates are loaded.
+    let env = TestEnv::with_config(crate::e2e::common::DEFAULT_CONFIG, &[], &[]);
+    std::fs::write(
+        env.policies_dir.join("gates").join("facts.json"),
+        r#"{ "gates": [
+  { "id": "brave-first", "event": "PreToolUse", "tool": "WebSearch", "priority": 50, "match": { "all": [ { "type": "field_regex", "field": "facts.mcp_servers", "pattern": "(^|,)brave-search(,|$)" } ] }, "action": { "type": "deny", "reason": "use brave" } },
+  { "id": "commit-first", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "field_regex", "field": "facts.git_uncommitted", "pattern": "\\S" } ] }, "action": { "type": "deny", "reason": "commit first" } }
+] }"#,
+    )
+    .unwrap();
+    let transcript = env
+        .home_dir
+        .join(".claude")
+        .join("projects")
+        .join("p")
+        .join("s.jsonl");
+    let search = json!({
+        "hook_event_name": "PreToolUse", "session_id": "facts", "tool_name": "WebSearch",
+        "tool_input": { "query": "x" }, "transcript_path": transcript.display().to_string()
+    })
+    .to_string();
+    let decide = |input: &str| {
+        let (code, stdout, _stderr) = env.run_evaluate_stdin(input, &["--json"]);
+        assert_exit_code(code, 0);
+        (assert_json_ok(&stdout), stdout)
+    };
+
+    assert_evaluate_action(&decide(&search).0, "allow");
+    std::fs::write(
+        env.home_dir.join(".claude.json"),
+        r#"{ "mcpServers": { "brave-search": { "command": "brave", "env": { "BRAVE_KEY": "secret-123" } }, "old": { "command": "x", "enabled": false } } }"#,
+    )
+    .unwrap();
+    let (data, stdout) = decide(&search);
+    assert_evaluate_action(&data, "deny");
+    assert!(
+        !stdout.contains("secret-123"),
+        "config values never leave the file: {stdout}"
+    );
+
+    let repo = env.temp_dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init", "-q"]);
+    let stop = json!({ "hook_event_name": "Stop", "session_id": "facts", "cwd": repo.display().to_string() })
+        .to_string();
+    assert_evaluate_action(&decide(&stop).0, "allow");
+    std::fs::write(repo.join("work.txt"), "unsaved").unwrap();
+    assert_evaluate_action(&decide(&stop).0, "deny");
+}

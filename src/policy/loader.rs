@@ -15,6 +15,45 @@ pub struct Config {
     pub state: StateConfig,
     #[serde(default)]
     pub maintenance: MaintenanceConfig,
+    #[serde(default)]
+    pub facts: FactsConfig,
+}
+
+/// What the environment facts look for. `tools` names the binaries `facts.tools`
+/// reports as present on `PATH`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FactsConfig {
+    #[serde(default = "default_fact_tools")]
+    pub tools: Vec<String>,
+}
+
+impl Default for FactsConfig {
+    fn default() -> Self {
+        Self {
+            tools: default_fact_tools(),
+        }
+    }
+}
+
+fn default_fact_tools() -> Vec<String> {
+    [
+        "git",
+        "rg",
+        "sd",
+        "yq",
+        "jq",
+        "shellcheck",
+        "ast-grep",
+        "difft",
+        "uv",
+        "node",
+        "bun",
+        "cargo",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
 }
 
 /// Engine knobs. She checks the fine print on both sides of the desk:

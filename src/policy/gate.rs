@@ -283,6 +283,20 @@ impl Gate {
 }
 
 impl Matcher {
+    /// Every payload field a `field_equals` or `field_regex` condition reads.
+    pub fn fields(&self) -> impl Iterator<Item = &str> {
+        self.all
+            .iter()
+            .chain(&self.any)
+            .chain(&self.none)
+            .filter_map(|c| match c {
+                Condition::FieldEquals(field, _) | Condition::FieldRegex(field, _) => {
+                    Some(field.as_str())
+                }
+                _ => None,
+            })
+    }
+
     #[must_use]
     pub fn matches(&self, req: &crate::types::EngineRequest) -> bool {
         let all_ok = self.all.iter().all(|c| c.matches(req));
