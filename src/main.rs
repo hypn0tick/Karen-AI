@@ -1269,6 +1269,7 @@ export const KarenAI = async ({ directory, client }) => {
   const notices = new Map();
   const reviewed = new Map(); // session -> last assistant message id already reviewed
   const held = new Set(); // sessions whose previous stop Karen blocked
+  const plans = new Map(); // session -> todo list signature at its last review
   return {
     event: async ({ event }) => {
       const idle = event?.type === "session.idle" || (event?.type === "session.status" && event.properties?.status?.type === "idle");
@@ -1282,7 +1283,23 @@ export const KarenAI = async ({ directory, client }) => {
       // in its own terminal is a top-level session and gets Stop: scope gates to roles with conditions (cwd).
       let parent = null;
       try { parent = (await client.session.get({ path: { id: sid } }))?.data?.parentID ?? null; } catch {}
-      const out = karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: held.has(sid), last_assistant_message: last.text, ...(parent ? { agent_id: sid } : {}) });
+      // The session's own todo list is evidence the closing text cannot reword. Without the todo API the
+      // fields are left out, so no todo gate can fire on missing data.
+      let todo = {};
+      try {
+        const todos = (await client.session.todo({ path: { id: sid } }))?.data;
+        if (Array.isArray(todos)) {
+          const sig = JSON.stringify(todos.map((t) => [t.content, t.status]));
+          const before = plans.get(sid);
+          plans.set(sid, sig);
+          todo = {
+            open_todos: todos.filter((t) => t.status === "pending" || t.status === "in_progress").map((t) => `${t.status}: ${t.content}`).join("\n"),
+            todo_count: todos.length,
+            todos_updated: before === undefined || before !== sig, // no baseline yet: nothing to accuse
+          };
+        }
+      } catch {}
+      const out = karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: held.has(sid), last_assistant_message: last.text, ...todo, ...(parent ? { agent_id: sid } : {}) });
       if (out.decision !== "block") { held.delete(sid); return; }
       held.add(sid);
       // Not awaited: the prompt resolves only after the model replies, and the event loop must not wait for it.

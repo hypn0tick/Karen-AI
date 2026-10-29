@@ -202,3 +202,105 @@ console.log(JSON.stringify({{ counts, prompts }}));
         "the continuation is held by the open question, not the closing check: {result}"
     );
 }
+
+#[test]
+#[serial]
+fn karen_runtime_opencode_stop_payload_carries_todo_state() {
+    // The Karen who reads your checklist, not just your closing remarks: an
+    // agent can word its way past a text gate, but its own todo list is a
+    // record it has to keep straight.
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::new();
+    fs::write(
+        env.policies_dir.join("gates").join("oc-todos.json"),
+        r#"{ "gates": [
+  { "id": "oc-open", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "field_regex", "field": "open_todos", "pattern": "\\S" } ] }, "action": { "type": "deny", "reason": "open" } },
+  { "id": "oc-stale", "event": "Stop", "priority": 45, "match": { "all": [ { "type": "field_equals", "field": "todos_updated", "value": false }, { "type": "field_regex", "field": "last_assistant_message", "pattern": "DONE:" } ] }, "action": { "type": "deny", "reason": "stale" } },
+  { "id": "oc-noplan", "event": "Stop", "priority": 40, "match": { "all": [ { "type": "field_equals", "field": "todo_count", "value": 0 }, { "type": "field_regex", "field": "last_assistant_message", "pattern": "DONE:" } ] }, "action": { "type": "deny", "reason": "no plan" } }
+] }"#,
+    )
+    .unwrap();
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+
+    let script = env.temp_dir.path().join("drive-todos.mjs");
+    fs::write(
+        &script,
+        format!(
+            r#"const {{ KarenAI }} = await import({plugin_url:?});
+const prompts = [];
+const history = {{ s1: [], s3: [] }};
+let todos = [];
+const client = {{ session: {{
+  messages: async ({{ path }}) => ({{ data: history[path.id] }}),
+  get: async ({{ path }}) => ({{ data: {{ id: path.id }} }}),
+  todo: async ({{ path }}) => {{ if (path.id === "s3") throw new Error("no todo api"); return {{ data: todos }}; }},
+  prompt: async ({{ path, body }}) => {{ prompts.push(path.id + ": " + body.parts.map((p) => p.text).join("")); return {{ data: {{}} }}; }},
+}} }};
+const hooks = await KarenAI({{ directory: {dir:?}, client }});
+const say = (sid, id, text) => history[sid].push({{ info: {{ id, role: "assistant" }}, parts: [{{ type: "text", text }}] }});
+const idle = (sid) => hooks.event({{ event: {{ type: "session.idle", properties: {{ sessionID: sid }} }} }});
+const counts = [];
+say("s1", "m1", "DONE: a"); await idle("s1"); counts.push(prompts.length);
+todos = [{{ content: "x", status: "in_progress", priority: "high" }}];
+say("s1", "m2", "working"); await idle("s1"); counts.push(prompts.length);
+todos = [{{ content: "x", status: "completed", priority: "high" }}];
+say("s1", "m3", "DONE: x"); await idle("s1"); counts.push(prompts.length);
+say("s1", "m4", "DONE: y"); await idle("s1"); counts.push(prompts.length);
+say("s3", "n1", "DONE: z"); await idle("s3"); counts.push(prompts.length);
+console.log(JSON.stringify({{ counts, prompts }}));
+"#,
+            dir = project_dir.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    // m1: DONE with no plan; m2: an open item; m3: the plan changed and is
+    // closed; m4: DONE again on an unchanged plan; s3: no todo API, so the
+    // fields are absent and no todo gate can fire.
+    assert_eq!(
+        result["counts"],
+        serde_json::json!([1, 2, 2, 3, 3]),
+        "{result}"
+    );
+    assert_eq!(
+        result["prompts"],
+        serde_json::json!([
+            "s1: [Karen-AI] no plan",
+            "s1: [Karen-AI] open",
+            "s1: [Karen-AI] stale"
+        ]),
+        "{result}"
+    );
+}
