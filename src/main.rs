@@ -307,18 +307,8 @@ fn state_for(set: &PolicySet) -> Box<dyn StateStore> {
     if set.config.state.backend == "memory" {
         Box::new(MemoryStore::new())
     } else {
-        Box::new(FileStore::new(expand_home(&set.config.state.file_dir)))
+        Box::new(FileStore::new(set.config.state.dir()))
     }
-}
-
-fn expand_home(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map_or_else(|| PathBuf::from("."), PathBuf::from);
-        return home.join(rest);
-    }
-    PathBuf::from(path)
 }
 
 fn fail_open(message: &str, dev: bool) -> ! {
@@ -637,7 +627,7 @@ fn policy_json(set: &PolicySet) -> Value {
         "config": {
             "fail_open": set.config.engine.fail_open,
             "state_backend": set.config.state.backend,
-            "state_dir": set.config.state.file_dir,
+            "state_dir": set.config.state.dir().display().to_string(),
         },
     })
 }
@@ -1261,16 +1251,19 @@ const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API 
 // OpenCode has no command hooks, so this plugin forwards events to `karen hook`
 // in the Claude Classic dialect. KAREN_BIN overrides the binary (default: karen on PATH).
 import { spawnSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 
 const KAREN = process.env.KAREN_BIN || "karen";
 // Every failure below fails open, so each one leaves a line here (KAREN_LOG overrides the path):
 // a stop that was not held can then be explained from evidence instead of guessed.
-const LOG = process.env.KAREN_LOG || join(tmpdir(), "karen-opencode.log");
+const LOG = process.env.KAREN_LOG || join(process.env.KAREN_HOME || join(homedir(), ".karen"), "logs", "karen-opencode.log");
 const fail = (stage, sid, detail) => {
-  try { appendFileSync(LOG, `${new Date().toISOString()} pid=${process.pid} session=${sid ?? "-"} ${stage}: ${String(detail?.message ?? detail ?? "").trim().slice(0, 500)}\n`); } catch {}
+  try {
+    mkdirSync(dirname(LOG), { recursive: true });
+    appendFileSync(LOG, `${new Date().toISOString()} pid=${process.pid} session=${sid ?? "-"} ${stage}: ${String(detail?.message ?? detail ?? "").trim().slice(0, 500)}\n`);
+  } catch {}
 };
 const TOOL_NAMES = { list: "LS", webfetch: "WebFetch", todowrite: "TodoWrite", todoread: "TodoRead", multiedit: "MultiEdit" };
 const toolName = (tool) => TOOL_NAMES[tool] ?? (tool ? tool[0].toUpperCase() + tool.slice(1) : tool);

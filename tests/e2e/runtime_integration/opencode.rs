@@ -575,4 +575,20 @@ await new Promise((r) => setTimeout(r, 100));
         offline.contains("session=s1 spawn") && offline.contains("on PreToolUse"),
         "{offline}"
     );
+
+    // Without KAREN_LOG the log lives in her home: <KAREN_HOME>/logs.
+    let karen_home = env.temp_dir.path().join("karen-home");
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_HOME", &karen_home)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &missing)
+        .env_remove("KAREN_LOG")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "node driver failed");
+    let default_log =
+        fs::read_to_string(karen_home.join("logs").join("karen-opencode.log")).unwrap_or_default();
+    assert!(default_log.contains("on PreToolUse"), "{default_log}");
 }

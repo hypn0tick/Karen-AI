@@ -90,15 +90,6 @@ fn detect_runtime(raw: &Value) -> String {
     }
 }
 
-/// `HOME`, then `USERPROFILE`, then the platform's home: the same order the CLI uses
-/// for `~/` in configured paths.
-fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .or_else(dirs::home_dir)
-}
-
 fn read_json(path: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(path).ok()?;
     json5::from_str(&text).ok()
@@ -126,7 +117,7 @@ fn same_path(a: &str, b: &str) -> bool {
 /// read from the runtime's own configuration files.
 fn mcp_servers(runtime: &str, cwd: Option<&str>) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    let Some(home) = home() else {
+    let Some(home) = crate::home::user_home() else {
         return names;
     };
     match runtime {

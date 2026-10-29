@@ -64,7 +64,7 @@ fn fixture_policies() -> tempfile::TempDir {
 
 fn run_hook(input: &str, args: &[&str]) -> (i32, String, String) {
     // The Karen who isolates her state: tests never write to the real
-    // ~/.cache/karen. Your permanent record is YOUR permanent record —
+    // ~/.karen/state. Your permanent record is YOUR permanent record —
     // she doesn't pad it with her rehearsals, and she rehearsed plenty.
     let home = tempfile::tempdir().expect("temp home for hook state");
     let policies = fixture_policies();

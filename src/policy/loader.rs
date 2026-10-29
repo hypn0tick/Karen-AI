@@ -112,16 +112,28 @@ impl Default for PolicyConfig {
 pub struct StateConfig {
     #[serde(default = "default_backend")]
     pub backend: String,
-    #[serde(default = "default_state_dir")]
-    pub file_dir: String,
+    /// Where the file backend keeps session state; `<Karen home>/state` when unset.
+    #[serde(default)]
+    pub file_dir: Option<String>,
 }
 
 impl Default for StateConfig {
     fn default() -> Self {
         Self {
             backend: default_backend(),
-            file_dir: default_state_dir(),
+            file_dir: None,
         }
+    }
+}
+
+impl StateConfig {
+    /// The configured directory with `~/` expanded, else `<Karen home>/state`.
+    #[must_use]
+    pub fn dir(&self) -> PathBuf {
+        self.file_dir.as_deref().map_or_else(
+            || crate::home::karen_home().join("state"),
+            crate::home::expand,
+        )
     }
 }
 
@@ -164,9 +176,6 @@ fn default_gates_dir() -> String {
 }
 fn default_backend() -> String {
     "auto".into()
-}
-fn default_state_dir() -> String {
-    "~/.cache/karen".into()
 }
 
 /// An always-on rule loaded from markdown. The Karen who injects it every session until it's not just a rule, it's a lifestyle.

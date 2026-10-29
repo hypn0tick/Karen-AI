@@ -22,7 +22,6 @@ validate_on_load = true
 
 [state]
 backend = "auto"
-file_dir = "~/.cache/karen"
 "#;
 
 /// Gate definitions for test fixtures

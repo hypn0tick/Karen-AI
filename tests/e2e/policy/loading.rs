@@ -92,6 +92,33 @@ file_dir = "~/.cache/karen"
 
 #[test]
 #[serial]
+fn karen_keeps_state_in_her_home_unless_told_otherwise() {
+    // Everything Karen keeps lives under ~/.karen: state defaults to
+    // ~/.karen/state, and an explicit file_dir still wins.
+    let env = TestEnv::new();
+    let (code, stdout, _stderr) = env.run_karen(&["validate", "--json"]);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let expected = env.home_dir.join(".karen").join("state");
+    assert_eq!(
+        data["config"]["state_dir"],
+        expected.display().to_string(),
+        "default state lives in ~/.karen/state"
+    );
+
+    let env = TestEnv::with_config("[state]\nfile_dir = \"~/elsewhere\"\n", &[], &[]);
+    let (code, stdout, _stderr) = env.run_karen(&["validate", "--json"]);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    assert_eq!(
+        data["config"]["state_dir"],
+        env.home_dir.join("elsewhere").display().to_string(),
+        "an explicit file_dir wins, with ~/ expanded"
+    );
+}
+
+#[test]
+#[serial]
 fn karen_verifies_hot_reload_picks_up_new_gate() {
     // The Karen who proves the CLI reload story: every invocation is a
     // fresh process, so a gate written between calls is law by the next
