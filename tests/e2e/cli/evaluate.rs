@@ -454,3 +454,34 @@ fn karen_evaluate_facts_name_the_mcp_servers_and_uncommitted_work() {
     std::fs::write(repo.join("work.txt"), "unsaved").unwrap();
     assert_evaluate_action(&decide(&stop).0, "deny");
 }
+
+#[test]
+#[serial]
+fn karen_evaluate_field_regex_reads_structured_fields_as_json() {
+    // Claude Code's Stop payload lists background tasks as an array; a
+    // field_regex reads it as compact JSON, so a stop with a task still
+    // running is held and a stop with only finished tasks is not.
+    let env = TestEnv::with_config(crate::e2e::common::DEFAULT_CONFIG, &[], &[]);
+    std::fs::write(
+        env.policies_dir.join("gates").join("tasks.json"),
+        r#"{ "gates": [
+  { "id": "running-task", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "field_regex", "field": "background_tasks", "pattern": "\"status\":\"running\"" } ] }, "action": { "type": "deny", "reason": "a task is still running" } },
+  { "id": "said-done", "event": "Stop", "priority": 40, "match": { "all": [ { "type": "field_regex", "field": "last_assistant_message", "pattern": "^DONE$" } ] }, "action": { "type": "deny", "reason": "strings match as before" } }
+] }"#,
+    )
+    .unwrap();
+    let decide = |payload: serde_json::Value| {
+        let (code, stdout, _stderr) = env.run_evaluate_stdin(&payload.to_string(), &["--json"]);
+        assert_exit_code(code, 0);
+        assert_json_ok(&stdout)
+    };
+    let stop = |tasks: serde_json::Value, msg: &str| json!({ "hook_event_name": "Stop", "session_id": "tasks", "background_tasks": tasks, "last_assistant_message": msg });
+
+    let running =
+        json!([{ "id": "t1", "type": "shell", "status": "running", "command": "tail -f x" }]);
+    let finished =
+        json!([{ "id": "t1", "type": "shell", "status": "completed", "command": "make" }]);
+    assert_evaluate_action(&decide(stop(running, "ok")), "deny");
+    assert_evaluate_action(&decide(stop(finished.clone(), "ok")), "allow");
+    assert_evaluate_action(&decide(stop(finished, "DONE")), "deny");
+}

@@ -344,13 +344,16 @@ impl Condition {
             Self::FieldEquals(field, value) => {
                 lookup(req, field).is_some_and(|actual| actual == value)
             }
-            // Same lookup, a pattern instead of an exact value: string fields
-            // only. Stop's `last_assistant_message` is the obvious customer —
-            // she reads the closing statement before she lets you leave; and
-            // PostToolUse's `tool_response.stdout`, what you just showed everyone.
-            Self::FieldRegex(field, re) => lookup(req, field)
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|s| re.is_match(s)),
+            // Same lookup, a pattern instead of an exact value. A string is
+            // matched as itself; anything else (Stop's `background_tasks`
+            // array, a number, an object) as its compact JSON text. Stop's
+            // `last_assistant_message` is the obvious customer — she reads the
+            // closing statement before she lets you leave; and PostToolUse's
+            // `tool_response.stdout`, what you just showed everyone.
+            Self::FieldRegex(field, re) => lookup(req, field).is_some_and(|v| match v.as_str() {
+                Some(s) => re.is_match(s),
+                None => re.is_match(&v.to_string()),
+            }),
             // A timer without a clock: the file's age is the clock, so a gate can say
             // "due again" by watching a marker that the finished chore touches. The
             // Karen who checks when you last did it, not whether you promised to.
