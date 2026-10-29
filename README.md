@@ -177,7 +177,8 @@ The Karen who decides. Four answers: `allow`, `deny`, `ask`, `modify`. No `maybe
 | `content_regex`     | Regex against tool input content     | reads the payload    |
 | `tool_regex`        | Regex against tool name              | knows the tool       |
 | `field_equals`      | Exact match on `tool_input.<field>`, else the top-level payload field (Stop's `stop_hook_active`); `.` walks nested keys (`tool_response.stdout`) | demands precision    |
-| `field_regex`       | Regex against the same field: a string as itself (Stop's `last_assistant_message`, PostToolUse's `tool_response.stdout`), anything else as compact JSON (Stop's `background_tasks`: `"status":"running"`) | reads your closing statement |
+| `field_regex`       | Regex against the same field, strings only (Stop's `last_assistant_message`, PostToolUse's `tool_response.stdout`) | reads your closing statement |
+| `field_json_regex`  | Regex against any field: a string as itself, anything else as compact JSON (Stop's `background_tasks`: `"status":"running"`) | reads the fine print too |
 | `file_older_than`   | The file at `path` is missing or was last modified more than `seconds` ago (`~/` is home; relative paths resolve against `cwd`), so a marker the finished chore touches makes a gate "due again" | checks when you last did it |
 | `always`            | Matches everything                   | doesn't miss a thing |
 

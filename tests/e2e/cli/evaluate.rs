@@ -457,15 +457,18 @@ fn karen_evaluate_facts_name_the_mcp_servers_and_uncommitted_work() {
 
 #[test]
 #[serial]
-fn karen_evaluate_field_regex_reads_structured_fields_as_json() {
+fn karen_evaluate_field_json_regex_reads_structured_fields() {
     // Claude Code's Stop payload lists background tasks as an array; a
-    // field_regex reads it as compact JSON, so a stop with a task still
-    // running is held and a stop with only finished tasks is not.
+    // field_json_regex reads it as compact JSON, so a stop with a task still
+    // running is held and a stop with only finished tasks is not. A plain
+    // field_regex stays strings-only: written for a string, it never starts
+    // matching an object.
     let env = TestEnv::with_config(crate::e2e::common::DEFAULT_CONFIG, &[], &[]);
     std::fs::write(
         env.policies_dir.join("gates").join("tasks.json"),
         r#"{ "gates": [
-  { "id": "running-task", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "field_regex", "field": "background_tasks", "pattern": "\"status\":\"running\"" } ] }, "action": { "type": "deny", "reason": "a task is still running" } },
+  { "id": "running-task", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "field_json_regex", "field": "background_tasks", "pattern": "\"status\":\"running\"" } ] }, "action": { "type": "deny", "reason": "a task is still running" } },
+  { "id": "string-only", "event": "Stop", "priority": 45, "match": { "all": [ { "type": "field_regex", "field": "background_tasks", "pattern": "completed" } ] }, "action": { "type": "deny", "reason": "field_regex read an array" } },
   { "id": "said-done", "event": "Stop", "priority": 40, "match": { "all": [ { "type": "field_regex", "field": "last_assistant_message", "pattern": "^DONE$" } ] }, "action": { "type": "deny", "reason": "strings match as before" } }
 ] }"#,
     )

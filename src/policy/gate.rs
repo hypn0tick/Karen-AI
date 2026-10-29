@@ -88,6 +88,13 @@ pub enum ConditionDef {
         field: String,
         pattern: String,
     },
+    /// `field_regex` for any value: a string as itself, anything else as its
+    /// compact JSON text. Opt-in, so a `field_regex` written for a string never
+    /// starts matching an object (Edit's `tool_response` holds the whole file).
+    FieldJsonRegex {
+        field: String,
+        pattern: String,
+    },
     /// Matches when the file at `path` is missing or was last modified more
     /// than `seconds` ago. `~/` expands to the home directory; a relative path
     /// resolves against the payload's `cwd`.
@@ -177,6 +184,7 @@ enum Condition {
     ToolRegex(Regex),
     FieldEquals(String, serde_json::Value),
     FieldRegex(String, Regex),
+    FieldJsonRegex(String, Regex),
     FileOlderThan(String, u64),
     Always,
 }
@@ -225,6 +233,9 @@ impl Gate {
                 ConditionDef::FieldEquals { field, value } => Condition::FieldEquals(field, value),
                 ConditionDef::FieldRegex { field, pattern } => {
                     Condition::FieldRegex(field, re(&pattern)?)
+                }
+                ConditionDef::FieldJsonRegex { field, pattern } => {
+                    Condition::FieldJsonRegex(field, re(&pattern)?)
                 }
                 ConditionDef::FileOlderThan { path, seconds } => {
                     Condition::FileOlderThan(path, seconds)
@@ -283,16 +294,16 @@ impl Gate {
 }
 
 impl Matcher {
-    /// Every payload field a `field_equals` or `field_regex` condition reads.
+    /// Every payload field a `field_equals`, `field_regex` or `field_json_regex` condition reads.
     pub fn fields(&self) -> impl Iterator<Item = &str> {
         self.all
             .iter()
             .chain(&self.any)
             .chain(&self.none)
             .filter_map(|c| match c {
-                Condition::FieldEquals(field, _) | Condition::FieldRegex(field, _) => {
-                    Some(field.as_str())
-                }
+                Condition::FieldEquals(field, _)
+                | Condition::FieldRegex(field, _)
+                | Condition::FieldJsonRegex(field, _) => Some(field.as_str()),
                 _ => None,
             })
     }
@@ -344,16 +355,21 @@ impl Condition {
             Self::FieldEquals(field, value) => {
                 lookup(req, field).is_some_and(|actual| actual == value)
             }
-            // Same lookup, a pattern instead of an exact value. A string is
-            // matched as itself; anything else (Stop's `background_tasks`
-            // array, a number, an object) as its compact JSON text. Stop's
-            // `last_assistant_message` is the obvious customer — she reads the
-            // closing statement before she lets you leave; and PostToolUse's
-            // `tool_response.stdout`, what you just showed everyone.
-            Self::FieldRegex(field, re) => lookup(req, field).is_some_and(|v| match v.as_str() {
-                Some(s) => re.is_match(s),
-                None => re.is_match(&v.to_string()),
-            }),
+            // Same lookup, a pattern instead of an exact value: string fields
+            // only. Stop's `last_assistant_message` is the obvious customer —
+            // she reads the closing statement before she lets you leave; and
+            // PostToolUse's `tool_response.stdout`, what you just showed everyone.
+            Self::FieldRegex(field, re) => lookup(req, field)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|s| re.is_match(s)),
+            // Any value: a string as itself, anything else (Stop's
+            // `background_tasks` array, an object) as its compact JSON text.
+            Self::FieldJsonRegex(field, re) => {
+                lookup(req, field).is_some_and(|v| match v.as_str() {
+                    Some(s) => re.is_match(s),
+                    None => re.is_match(&v.to_string()),
+                })
+            }
             // A timer without a clock: the file's age is the clock, so a gate can say
             // "due again" by watching a marker that the finished chore touches. The
             // Karen who checks when you last did it, not whether you promised to.
