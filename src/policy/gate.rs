@@ -88,6 +88,13 @@ pub enum ConditionDef {
         field: String,
         pattern: String,
     },
+    /// Matches when the file at `path` is missing or was last modified more
+    /// than `seconds` ago. `~/` expands to the home directory; a relative path
+    /// resolves against the payload's `cwd`.
+    FileOlderThan {
+        path: String,
+        seconds: u64,
+    },
     Always,
 }
 
@@ -166,6 +173,7 @@ enum Condition {
     ToolRegex(Regex),
     FieldEquals(String, serde_json::Value),
     FieldRegex(String, Regex),
+    FileOlderThan(String, u64),
     Always,
 }
 
@@ -213,6 +221,9 @@ impl Gate {
                 ConditionDef::FieldEquals { field, value } => Condition::FieldEquals(field, value),
                 ConditionDef::FieldRegex { field, pattern } => {
                     Condition::FieldRegex(field, re(&pattern)?)
+                }
+                ConditionDef::FileOlderThan { path, seconds } => {
+                    Condition::FileOlderThan(path, seconds)
                 }
                 ConditionDef::Always => Condition::Always,
             })
@@ -322,9 +333,38 @@ impl Condition {
             Self::FieldRegex(field, re) => lookup(req, field)
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|s| re.is_match(s)),
+            // A timer without a clock: the file's age is the clock, so a gate can say
+            // "due again" by watching a marker that the finished chore touches. The
+            // Karen who checks when you last did it, not whether you promised to.
+            Self::FileOlderThan(path, seconds) => {
+                file_older_than(path, req.cwd.as_deref(), *seconds)
+            }
             Self::Always => true,
         }
     }
+}
+
+fn file_older_than(path: &str, cwd: Option<&str>, seconds: u64) -> bool {
+    let resolved = if let Some(rest) = path.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map_or_else(
+                || std::path::PathBuf::from(path),
+                |h| std::path::PathBuf::from(h).join(rest),
+            )
+    } else {
+        let p = std::path::PathBuf::from(path);
+        match cwd {
+            Some(dir) if p.is_relative() => std::path::Path::new(dir).join(p),
+            _ => p,
+        }
+    };
+    let Ok(modified) = std::fs::metadata(&resolved).and_then(|m| m.modified()) else {
+        return true;
+    };
+    std::time::SystemTime::now()
+        .duration_since(modified)
+        .is_ok_and(|age| age.as_secs() > seconds)
 }
 
 #[must_use]

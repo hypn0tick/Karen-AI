@@ -360,3 +360,33 @@ file_dir = "~/.cache/karen"
     let data2 = assert_json_ok(&stdout2);
     assert_evaluate_action(&data2, "deny"); // Still first strike because MemoryStore is fresh each time
 }
+
+#[test]
+#[serial]
+fn karen_evaluate_file_older_than_counts_a_missing_or_stale_marker_as_due() {
+    // The Karen who keeps the calendar: a chore is due when its marker is
+    // missing or older than the interval, and done when the marker is fresh.
+    let env = TestEnv::new();
+    std::fs::write(
+        env.policies_dir.join("gates").join("review-due.json"),
+        r#"{ "gates": [
+  { "id": "review-due", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "file_older_than", "path": "last-review", "seconds": 3600 } ] }, "action": { "type": "deny", "reason": "review due" } }
+] }"#,
+    )
+    .unwrap();
+    let marker = env.temp_dir.path().join("last-review");
+    let cwd = env.temp_dir.path().display().to_string();
+    let decide = || {
+        let input = json!({ "hook_event_name": "Stop", "session_id": "age", "cwd": cwd });
+        let (code, stdout, _stderr) = env.run_evaluate_stdin(&input.to_string(), &["--json"]);
+        assert_exit_code(code, 0);
+        assert_json_ok(&stdout)
+    };
+
+    assert_evaluate_action(&decide(), "deny");
+    let file = std::fs::File::create(&marker).unwrap();
+    assert_evaluate_action(&decide(), "allow");
+    file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7200))
+        .unwrap();
+    assert_evaluate_action(&decide(), "deny");
+}
