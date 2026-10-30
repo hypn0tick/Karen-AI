@@ -136,3 +136,39 @@ fn karen_verifies_claude_adapter_protocol_shape() {
     assert_exit_code(code, 0);
     assert_hook_deny(&stdout, Some("attribution"));
 }
+
+#[test]
+#[serial]
+fn karen_answers_without_waiting_for_stdin_to_close() {
+    // OpenCode's bridge timed out on most small payloads: the runtime kept the
+    // child's stdin open after writing, and Karen read until end of input.
+    use std::io::{Read, Write};
+    let env = TestEnv::new();
+    let mut child = env
+        .karen_cmd(&["hook", "--adapter", "claude-classic"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin
+        .write_all(br#"{"hook_event_name":"PreToolUse","session_id":"open-stdin","tool_name":"Bash","tool_input":{"command":"ls"}}"#)
+        .unwrap();
+    stdin.flush().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        let _ = tx.send(out);
+    });
+    let answered = rx.recv_timeout(std::time::Duration::from_secs(5));
+    drop(stdin);
+    if answered.is_err() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    let out = answered.expect("Karen must answer while stdin is still open");
+    serde_json::from_str::<serde_json::Value>(&out).expect("valid JSON output");
+}

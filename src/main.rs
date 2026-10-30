@@ -245,14 +245,18 @@ fn adapter_name(adapter: Adapter) -> &'static str {
 fn run_hook(adapter: Adapter, policies: Option<PathBuf>, part: Option<usize>) -> i32 {
     let dev = std::env::var_os("KAREN_DEV").is_some();
 
-    let mut input = String::new();
-    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
-        fail_open(&format!("cannot read stdin: {error}"), dev);
-    }
-
-    let raw: Value = match serde_json::from_str(&input) {
-        Ok(value) => value,
-        Err(error) => fail_open(&format!("invalid JSON input: {error}"), dev),
+    // The payload is one JSON value; she stops reading when it is complete,
+    // never waiting for end of input. A runtime that is slow to close the
+    // pipe after a small write (the OpenCode bridge timed out on most small
+    // payloads this way) costs her nothing.
+    let stdin = std::io::BufReader::new(std::io::stdin().lock());
+    let raw: Value = match serde_json::Deserializer::from_reader(stdin)
+        .into_iter::<Value>()
+        .next()
+    {
+        Some(Ok(value)) => value,
+        Some(Err(error)) => fail_open(&format!("invalid JSON input: {error}"), dev),
+        None => fail_open("invalid JSON input: empty stdin", dev),
     };
 
     let mut request = match normalize(adapter, raw) {
