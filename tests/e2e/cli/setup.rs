@@ -197,6 +197,13 @@ fn karen_setup_actual_opencode_writes_plugin() {
     assert!(content.contains("\"tool.execute.before\""));
     assert!(content.contains("\"tool.execute.after\""));
     assert!(content.contains("\"experimental.chat.system.transform\""));
+    // Inside OpenCode a piped stdin stalled some calls and a file descriptor as
+    // stdin stalled every call, each until the 10 s timeout: the bridge names the
+    // payload file with --input and hands Karen no stdin.
+    assert!(content.contains("args.push(\"--input\", file)"));
+    assert!(content.contains("stdio: [\"ignore\", \"pipe\", \"pipe\"]"));
+    assert!(!content.contains("input: JSON.stringify"));
+    assert!(!content.contains("openSync"));
     assert!(!project_dir.join(".opencode").join("hooks.json").exists());
 }
 
