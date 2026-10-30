@@ -1373,8 +1373,8 @@ const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API 
 // OpenCode has no command hooks, so this plugin forwards events to `karen hook`
 // in the Claude Classic dialect. KAREN_BIN overrides the binary (default: karen on PATH).
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { appendFileSync, closeSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 const KAREN = process.env.KAREN_BIN || "karen";
@@ -1390,12 +1390,29 @@ const fail = (stage, sid, detail) => {
 const TOOL_NAMES = { list: "LS", webfetch: "WebFetch", todowrite: "TodoWrite", todoread: "TodoRead", multiedit: "MultiEdit" };
 const toolName = (tool) => TOOL_NAMES[tool] ?? (tool ? tool[0].toUpperCase() + tool.slice(1) : tool);
 
+let calls = 0;
 function karen(payload, part) {
   const args = ["hook", "--adapter", "claude-classic"];
   if (part) args.push("--part", String(part));
   // The runtime is a fact only the caller knows; Karen reads the rest (MCP servers, tools, git) herself.
   const facts = { runtime: "opencode", ...(payload.facts ?? {}) };
-  const run = spawnSync(KAREN, args, { input: JSON.stringify({ ...payload, facts }), encoding: "utf8", timeout: 10000, windowsHide: true });
+  // The payload reaches Karen as a file on stdin, never a pipe: OpenCode's runtime
+  // sometimes left a piped payload undelivered until the call timed out.
+  const file = join(tmpdir(), `karen-${process.pid}-${++calls}.json`);
+  let run;
+  try {
+    writeFileSync(file, JSON.stringify({ ...payload, facts }));
+    const fd = openSync(file, "r");
+    try {
+      run = spawnSync(KAREN, args, { stdio: [fd, "pipe", "pipe"], encoding: "utf8", timeout: 10000, windowsHide: true });
+    } finally {
+      closeSync(fd);
+    }
+  } catch (e) {
+    run = { error: e };
+  } finally {
+    try { unlinkSync(file); } catch {}
+  }
   const sid = payload.session_id;
   if (run.error) { fail(`spawn ${KAREN} on ${payload.hook_event_name}`, sid, run.error); return {}; }
   if (run.status !== 0) { fail(`exit ${run.status} on ${payload.hook_event_name}`, sid, run.stderr || "(no stderr)"); return {}; }
