@@ -214,9 +214,17 @@ fn rule_front_matter(path: &Path, text: &str) -> Result<(Vec<String>, String), L
         path: path.to_path_buf(),
         message,
     };
-    let end = rest
-        .find("\n---")
-        .ok_or_else(|| invalid("front matter has no closing `---`".into()))?;
+    // The closing line may be the first one: an empty block is valid.
+    let mut offset = 0;
+    let mut closing = None;
+    for line in rest.split_inclusive('\n') {
+        if line.trim_end() == "---" {
+            closing = Some((offset, offset + line.len()));
+            break;
+        }
+        offset += line.len();
+    }
+    let (end, body) = closing.ok_or_else(|| invalid("front matter has no closing `---`".into()))?;
     let mut runtimes = Vec::new();
     for line in rest[..end].lines().map(str::trim).filter(|l| !l.is_empty()) {
         let (key, value) = line
@@ -237,9 +245,7 @@ fn rule_front_matter(path: &Path, text: &str) -> Result<(Vec<String>, String), L
             .filter(|r| !r.is_empty())
             .collect();
     }
-    let after = &rest[end + 4..];
-    let after = after.split_once('\n').map_or("", |(_, b)| b);
-    Ok((runtimes, after.to_string()))
+    Ok((runtimes, rest[body..].to_string()))
 }
 
 /// Everything she needs to evaluate a request: every layer, merged. The Karen who prepares the way only someone with a laminated process can.
@@ -327,9 +333,11 @@ impl Roots {
     #[must_use]
     pub fn discover(explicit: Option<PathBuf>, cwd: Option<&Path>) -> Self {
         let user = Some(crate::home::user_policies()).filter(|p| p.is_dir());
-        if let Some(project) =
-            explicit.or_else(|| std::env::var_os("KAREN_POLICIES").map(PathBuf::from))
-        {
+        if let Some(project) = explicit.or_else(|| {
+            std::env::var_os("KAREN_POLICIES")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        }) {
             return Self {
                 user,
                 project: Some(project),
@@ -418,9 +426,15 @@ fn lexical(path: &Path) -> PathBuf {
     for part in path.components() {
         match part {
             std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
+            // `..` removes a name, stays at a root, and is kept when there is
+            // nothing left to remove (a relative path climbing out).
+            std::path::Component::ParentDir => match out.components().next_back() {
+                Some(std::path::Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(std::path::Component::RootDir | std::path::Component::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
             other => out.push(other),
         }
     }
@@ -719,13 +733,13 @@ fn config_from(table: &toml::Table, root: &Path) -> Result<Config, LoadError> {
         })
 }
 
-/// Compile every gate's patterns once per version of the policy files. A
-/// marker named by the root and a fingerprint of its files (path, size,
-/// modification time) records a clean validation, so an unchanged policy skips
-/// the work; any edit, addition or removal changes the fingerprint and
-/// validates again. Without a usable cache directory she validates every time.
+/// Compile every gate's patterns once per set of patterns. A marker named by
+/// the root and a hash of the patterns themselves (plus Karen's version)
+/// records a clean validation, so an unchanged policy skips the work and any
+/// changed pattern validates again, whatever the file's size or modification
+/// time says. Without a usable cache directory she validates every time.
 fn validate_once(root: &Path, gates: &[Gate]) -> Result<(), LoadError> {
-    let marker = fingerprint(root).map(|(root_id, files_id)| {
+    let marker = fingerprint(root, gates).map(|(root_id, files_id)| {
         (
             format!("validated-{root_id:016x}-"),
             crate::home::cache_dir().join(format!("validated-{root_id:016x}-{files_id:016x}")),
@@ -760,40 +774,28 @@ fn record_validation(prefix: &str, path: &Path) {
     let _ = std::fs::write(path, env!("CARGO_PKG_VERSION"));
 }
 
-/// A hash of the root's path, and a hash of every file under it with its size
-/// and modification time plus Karen's version.
-fn fingerprint(root: &Path) -> Option<(u64, u64)> {
-    use std::hash::{DefaultHasher, Hash, Hasher};
+/// A hash of the root's path, and a hash of Karen's version and every gate's
+/// id and patterns. FNV-1a, so a marker stays valid across builds.
+fn fingerprint(root: &Path, gates: &[Gate]) -> Option<(u64, u64)> {
     let root = root.canonicalize().ok()?;
-    let mut files = Vec::new();
-    walk_files(&root, &mut files).ok()?;
-    files.sort();
-    let mut root_hash = DefaultHasher::new();
-    root.hash(&mut root_hash);
-    let mut files_hash = DefaultHasher::new();
-    env!("CARGO_PKG_VERSION").hash(&mut files_hash);
-    for path in files {
-        let meta = std::fs::metadata(&path).ok()?;
-        let modified = meta
-            .modified()
-            .ok()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?;
-        (path, meta.len(), modified.as_nanos()).hash(&mut files_hash);
+    let root_hash = fnv1a(FNV_OFFSET, root.to_string_lossy().as_bytes());
+    let mut hash = fnv1a(FNV_OFFSET, env!("CARGO_PKG_VERSION").as_bytes());
+    for gate in gates {
+        hash = fnv1a(hash, gate.id.as_bytes());
+        for pattern in gate.patterns() {
+            hash = fnv1a(fnv1a(hash, &[0]), pattern.as_bytes());
+        }
+        hash = fnv1a(hash, &[1]);
     }
-    Some((root_hash.finish(), files_hash.finish()))
+    Some((root_hash, hash))
 }
 
-fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            walk_files(&path, out)?;
-        } else {
-            out.push(path);
-        }
-    }
-    Ok(())
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+fn fnv1a(seed: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(seed, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 fn load_config_table(root: &Path) -> Result<toml::Table, LoadError> {
@@ -930,6 +932,35 @@ mod tests {
         named.sort_unstable();
         shipped.sort_unstable();
         assert_eq!(named, shipped);
+    }
+
+    #[test]
+    fn rule_front_matter_handles_empty_crlf_and_unclosed_blocks() {
+        let p = Path::new("r.md");
+        let (r, body) = rule_front_matter(p, "---\n---\n# body\n").unwrap();
+        assert!(r.is_empty());
+        assert_eq!(body, "# body\n");
+        let (r, body) =
+            rule_front_matter(p, "---\r\nruntimes: [claude]\r\n---\r\n# hi\r\n").unwrap();
+        assert_eq!(r, ["claude"]);
+        assert_eq!(body, "# hi\r\n");
+        let err = rule_front_matter(p, "---\n# a rule with no closing line\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no closing"), "{err}");
+        let (r, body) = rule_front_matter(p, "# plain\n").unwrap();
+        assert!(r.is_empty());
+        assert_eq!(body, "# plain\n");
+    }
+
+    #[test]
+    fn lexical_resolves_parents_by_name() {
+        assert_eq!(
+            lexical(Path::new("/a/.git/worktrees/wt/../..")),
+            Path::new("/a/.git")
+        );
+        assert_eq!(lexical(Path::new("../a/./b")), Path::new("../a/b"));
+        assert_eq!(lexical(Path::new("/..")), Path::new("/"));
     }
 
     #[test]

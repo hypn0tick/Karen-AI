@@ -374,14 +374,22 @@ impl Gate {
     /// Returns [`CompileError::Regex`] for the first match pattern that is not
     /// a valid regex.
     pub fn validate(&self) -> Result<(), CompileError> {
-        self.matcher
-            .conditions()
-            .filter_map(Condition::regex)
+        self.tool_regex
+            .iter()
+            .chain(self.matcher.conditions().filter_map(Condition::regex))
             .try_for_each(LazyRegex::validate)
             .map_err(|source| CompileError::Regex {
                 gate: self.id.clone(),
                 source,
             })
+    }
+
+    /// Every pattern [`Gate::validate`] compiles, in a fixed order.
+    pub fn patterns(&self) -> impl Iterator<Item = &str> {
+        self.tool_regex
+            .iter()
+            .chain(self.matcher.conditions().filter_map(Condition::regex))
+            .map(|re| re.pattern.as_str())
     }
 
     #[must_use]

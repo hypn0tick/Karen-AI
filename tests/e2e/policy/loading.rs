@@ -261,3 +261,84 @@ fn karen_verifies_disabled_gate_not_evaluated() {
     // jsonc-test-gate is enabled and would deny, but we can't easily disable just one gate
     // This test verifies the concept - a more complete test would toggle enabled
 }
+
+#[test]
+#[serial]
+fn karen_catches_a_same_size_same_mtime_edit_that_breaks_a_pattern() {
+    // Review finding: the marker was keyed on file size and modification time,
+    // so restoring a file from backup with a broken pattern of the same length
+    // left the old marker valid and the gate matched nothing, with no signal.
+    let gate = |pattern: &str| {
+        format!(
+            r#"{{ "id": "edited", "event": "PreToolUse", "tool": "Bash", "match": {{ "all": [ {{ "type": "command_regex", "pattern": "{pattern}" }} ] }}, "action": {{ "type": "deny", "reason": "edited gate" }} }}"#
+        )
+    };
+    let env = TestEnv::with_config(DEFAULT_CONFIG, &[], &[]);
+    let path = env.policies_dir.join("gates").join("edited.json");
+    let hook = |command: &str| {
+        let input = json!({ "hook_event_name": "PreToolUse", "session_id": "mtime", "tool_name": "Bash", "tool_input": { "command": command } }).to_string();
+        let (code, stdout, _stderr) = env.run_hook(&input, &[]);
+        assert_exit_code(code, 0);
+        stdout
+    };
+
+    std::fs::write(&path, gate("^(ls|cat)$")).unwrap();
+    assert!(hook("ls").contains("edited gate"), "the valid gate denies");
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    std::fs::write(&path, gate("^(ls|ca[)$")).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    let out = hook("ls");
+    assert!(
+        out.contains("not enforcing"),
+        "a broken pattern must fail the load loudly, not go silent: {out}"
+    );
+}
+
+#[test]
+#[serial]
+fn karen_validate_rejects_a_broken_tool_filter() {
+    // A tool filter is a regex too; a broken one made the gate never apply.
+    let gate = r#"{ "id": "bad-tool", "event": "PreToolUse", "tool": "Bash(", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "x" } }"#;
+    let env = TestEnv::with_config(
+        DEFAULT_CONFIG,
+        &[GateFixture {
+            file: "bad-tool.json",
+            content: gate,
+        }],
+        &[],
+    );
+    let (code, stdout, _stderr) = env.run_karen(&["validate", "--json"]);
+    assert_exit_code(code, 78);
+    assert_json_error(&stdout, "POLICY_INVALID");
+}
+
+#[test]
+#[serial]
+fn karen_treats_an_empty_karen_policies_as_unset() {
+    // Review finding: KAREN_POLICIES="" was taken as an explicit, missing root,
+    // which switched enforcement off everywhere.
+    let env = TestEnv::with_config(DEFAULT_CONFIG, &[], &[]);
+    let project = env.temp_dir.path().join("proj");
+    let gates = project.join(".karen").join("policies").join("gates");
+    std::fs::create_dir_all(&gates).unwrap();
+    std::fs::write(
+        gates.join("found.json"),
+        r#"{ "id": "found", "event": "PreToolUse", "tool": "Bash", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "found" } }"#,
+    )
+    .unwrap();
+    let mut cmd = env.karen_cmd(&["validate", "--json"]);
+    cmd.env("KAREN_POLICIES", "").current_dir(&project);
+    let (code, stdout, _stderr) = crate::e2e::common::run_command(cmd);
+    assert_exit_code(code, 0);
+    assert_eq!(
+        assert_json_ok(&stdout)["project_found_by"],
+        "in-tree",
+        "{stdout}"
+    );
+}
