@@ -59,6 +59,9 @@ enum Command {
         /// Deliver one rule-injection part (1-based). She chunks rules so the harness can't truncate her mid-lecture. The Karen who plans ahead — surprises are for parties she wasn't invited to.
         #[arg(long)]
         part: Option<usize>,
+        /// Read the hook payload from this file instead of stdin. For a caller whose runtime cannot hand a child a reliable stdin: the `OpenCode` bridge writes the payload to a file and gives her no stdin at all.
+        #[arg(long)]
+        input: Option<PathBuf>,
     },
     /// Validate policy files and print a summary. The Karen who checks first, because "it looked fine" is not a validation result — and she'll be quoting you on it.
     Validate(ValidateArgs),
@@ -198,7 +201,8 @@ fn main() {
             adapter,
             policies,
             part,
-        } => run_hook(adapter, policies, part),
+            input,
+        } => run_hook(adapter, policies, part, input.as_deref()),
         Command::Validate(args) => run_validate(args, false),
         Command::Check(args) => run_validate(args, true),
         Command::Evaluate(args) => run_evaluate(&args),
@@ -242,21 +246,33 @@ fn adapter_name(adapter: Adapter) -> &'static str {
     }
 }
 
-fn run_hook(adapter: Adapter, policies: Option<PathBuf>, part: Option<usize>) -> i32 {
+fn run_hook(
+    adapter: Adapter,
+    policies: Option<PathBuf>,
+    part: Option<usize>,
+    input: Option<&std::path::Path>,
+) -> i32 {
     let dev = std::env::var_os("KAREN_DEV").is_some();
 
     // The payload is one JSON value; she stops reading when it is complete,
     // never waiting for end of input. A runtime that is slow to close the
-    // pipe after a small write (the OpenCode bridge timed out on most small
-    // payloads this way) costs her nothing.
-    let stdin = std::io::BufReader::new(std::io::stdin().lock());
-    let raw: Value = match serde_json::Deserializer::from_reader(stdin)
-        .into_iter::<Value>()
-        .next()
-    {
+    // pipe after a small write costs her nothing.
+    let first_value = |reader: &mut dyn std::io::Read| {
+        serde_json::Deserializer::from_reader(reader)
+            .into_iter::<Value>()
+            .next()
+    };
+    let parsed = match input {
+        Some(path) => match std::fs::File::open(path) {
+            Ok(file) => first_value(&mut std::io::BufReader::new(file)),
+            Err(error) => fail_open(&format!("cannot read {}: {error}", path.display()), dev),
+        },
+        None => first_value(&mut std::io::BufReader::new(std::io::stdin().lock())),
+    };
+    let raw: Value = match parsed {
         Some(Ok(value)) => value,
         Some(Err(error)) => fail_open(&format!("invalid JSON input: {error}"), dev),
-        None => fail_open("invalid JSON input: empty stdin", dev),
+        None => fail_open("invalid JSON input: empty input", dev),
     };
 
     let mut request = match normalize(adapter, raw) {
@@ -1373,7 +1389,7 @@ const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API 
 // OpenCode has no command hooks, so this plugin forwards events to `karen hook`
 // in the Claude Classic dialect. KAREN_BIN overrides the binary (default: karen on PATH).
 import { spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, mkdirSync, openSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -1396,18 +1412,15 @@ function karen(payload, part) {
   if (part) args.push("--part", String(part));
   // The runtime is a fact only the caller knows; Karen reads the rest (MCP servers, tools, git) herself.
   const facts = { runtime: "opencode", ...(payload.facts ?? {}) };
-  // The payload reaches Karen as a file on stdin, never a pipe: OpenCode's runtime
-  // sometimes left a piped payload undelivered until the call timed out.
+  // The payload reaches Karen as a file named by --input and she gets no stdin:
+  // OpenCode's runtime left a piped payload undelivered on some calls, and a file
+  // descriptor handed over as stdin on every call, until each timed out.
   const file = join(tmpdir(), `karen-${process.pid}-${++calls}.json`);
+  args.push("--input", file);
   let run;
   try {
     writeFileSync(file, JSON.stringify({ ...payload, facts }));
-    const fd = openSync(file, "r");
-    try {
-      run = spawnSync(KAREN, args, { stdio: [fd, "pipe", "pipe"], encoding: "utf8", timeout: 10000, windowsHide: true });
-    } finally {
-      closeSync(fd);
-    }
+    run = spawnSync(KAREN, args, { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 10000, windowsHide: true });
   } catch (e) {
     run = { error: e };
   } finally {

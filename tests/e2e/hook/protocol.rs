@@ -172,3 +172,39 @@ fn karen_answers_without_waiting_for_stdin_to_close() {
     let out = answered.expect("Karen must answer while stdin is still open");
     serde_json::from_str::<serde_json::Value>(&out).expect("valid JSON output");
 }
+
+#[test]
+#[serial]
+fn karen_rules_on_a_payload_file_with_no_stdin() {
+    // The OpenCode bridge names the payload file with --input and gives her no
+    // stdin: a runtime that cannot hand a child a reliable stdin still gets a ruling.
+    let env = TestEnv::new();
+    let input = json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": "test-hook-input-file",
+        "tool_name": "Bash",
+        "tool_input": { "command": "git commit -m \"x \u{1F916}\"" }
+    });
+    let file = env.temp_dir.path().join("payload.json");
+    std::fs::write(&file, input.to_string()).unwrap();
+    let output = env
+        .karen_cmd(&["hook", "--adapter", "claude-classic", "--input"])
+        .arg(&file)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_exit_code(output.status.code().unwrap_or(-1), 0);
+    assert_hook_deny(
+        &String::from_utf8_lossy(&output.stdout),
+        Some("attribution"),
+    );
+
+    let missing = env
+        .karen_cmd(&["hook", "--adapter", "claude-classic", "--input"])
+        .arg(env.temp_dir.path().join("absent.json"))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_exit_code(missing.status.code().unwrap_or(-1), 0);
+    assert_hook_allow(&String::from_utf8_lossy(&missing.stdout));
+}

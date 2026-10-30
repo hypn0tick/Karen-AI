@@ -96,7 +96,7 @@ The `setup` command wires `karen hook` into each runtime where that runtime actu
 
 | Command    | Purpose                                    | The Karen Who...                     |
 | ---------- | ------------------------------------------ | ------------------------------------ |
-| `hook`     | External hook: JSON on stdin, protocol JSON on stdout. `--adapter` defaults to `claude-classic`; `--part N` delivers SessionStart rule part N | respects the protocol                |
+| `hook`     | External hook: JSON on stdin (or from the file `--input PATH` names), protocol JSON on stdout. `--adapter` defaults to `claude-classic`; `--part N` delivers SessionStart rule part N | respects the protocol                |
 | `validate` | Validate policy files, print summary       | reads the fine print                 |
 | `check`    | Verbose policy health (lists every gate and rule) | leaves no stone unturned             |
 | `evaluate` | Dry-run evaluation (never writes state)    | plays it safe                        |
