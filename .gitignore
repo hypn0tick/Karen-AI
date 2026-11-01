@@ -3,6 +3,7 @@
 
 # Scratch project layer - DO NOT COMMIT
 /.karen/
+/.scratch/
 
 # Local-only tooling and scratch systems — kept out of the public project.
 # The Karen who knows exactly who belongs in the family portrait.
