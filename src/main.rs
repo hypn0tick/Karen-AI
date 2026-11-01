@@ -1388,8 +1388,8 @@ fn is_karen_hook(entry: &Value) -> bool {
 const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API v1). Installed by `karen setup opencode`.
 // OpenCode has no command hooks, so this plugin forwards events to `karen hook`
 // in the Claude Classic dialect. KAREN_BIN overrides the binary (default: karen on PATH).
-import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -1407,6 +1407,10 @@ const TOOL_NAMES = { list: "LS", webfetch: "WebFetch", todowrite: "TodoWrite", t
 const toolName = (tool) => TOOL_NAMES[tool] ?? (tool ? tool[0].toUpperCase() + tool.slice(1) : tool);
 
 let calls = 0;
+// An async spawn, never spawnSync: under OpenCode's embedded Bun on Windows, spawnSync of the
+// same binary timed out (ETIMEDOUT) on every call even with no stdin, while an async spawn
+// answers in ~30 ms; a synchronous call would also stall OpenCode's event loop. Every call
+// site awaits the promise, which resolves to `{}` on any failure (fail-open, logged).
 function karen(payload, part) {
   const args = ["hook", "--adapter", "claude-classic"];
   if (part) args.push("--part", String(part));
@@ -1417,19 +1421,40 @@ function karen(payload, part) {
   // descriptor handed over as stdin on every call, until each timed out.
   const file = join(tmpdir(), `karen-${process.pid}-${++calls}.json`);
   args.push("--input", file);
-  let run;
-  try {
-    writeFileSync(file, JSON.stringify({ ...payload, facts }));
-    run = spawnSync(KAREN, args, { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 10000, windowsHide: true });
-  } catch (e) {
-    run = { error: e };
-  } finally {
-    try { unlinkSync(file); } catch {}
-  }
   const sid = payload.session_id;
-  if (run.error) { fail(`spawn ${KAREN} on ${payload.hook_event_name}`, sid, run.error); return {}; }
-  if (run.status !== 0) { fail(`exit ${run.status} on ${payload.hook_event_name}`, sid, run.stderr || "(no stderr)"); return {}; }
-  try { return JSON.parse(run.stdout || "{}"); } catch (e) { fail(`unreadable output on ${payload.hook_event_name}`, sid, e); return {}; }
+  const event = payload.hook_event_name;
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      try { unlinkSync(file); } catch {}
+      resolve(value);
+    };
+    let stdout = "";
+    let stderr = "";
+    let child;
+    try {
+      writeFileSync(file, JSON.stringify({ ...payload, facts }));
+      child = spawn(KAREN, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    } catch (e) {
+      fail(`spawn ${KAREN} on ${event}`, sid, e);
+      return done({});
+    }
+    child.stdout.on("data", (d) => { stdout += d; });
+    child.stderr.on("data", (d) => { stderr += d; });
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      fail(`timeout after 10000 ms on ${event}`, sid, stderr || "(no stderr)");
+      done({});
+    }, 10000);
+    child.on("error", (e) => { clearTimeout(timer); fail(`spawn ${KAREN} on ${event}`, sid, e); done({}); });
+    child.on("close", (status) => {
+      clearTimeout(timer);
+      if (status !== 0) { fail(`exit ${status} on ${event}`, sid, stderr || "(no stderr)"); return done({}); }
+      try { done(JSON.parse(stdout || "{}")); } catch (e) { fail(`unreadable output on ${event}`, sid, e); done({}); }
+    });
+  });
 }
 
 // OpenCode has no Stop hook: an idle session is reviewed as a Stop, and a block is
@@ -1452,6 +1477,31 @@ export const KarenAI = async ({ directory, client }) => {
     if (offDuty.has(sid)) return null;
     offDuty.add(sid);
     return message;
+  };
+  // A prompt sent without a model runs on the session's creation-time model, so a session
+  // whose model was changed mid-run would be woken on the old one. The wake names the model
+  // the session uses now: the live session record first, then the "provider/model" field of
+  // OPENCODE_CONFIG, else none (the server default).
+  const wakeModel = async (sid) => {
+    try {
+      const s = (await client.session.get({ path: { id: sid } }))?.data;
+      const modelID = s?.model?.modelID ?? s?.model?.id;
+      if (s?.model?.providerID && modelID) return { providerID: s.model.providerID, modelID };
+    } catch {}
+    try {
+      const model = process.env.OPENCODE_CONFIG ? JSON.parse(readFileSync(process.env.OPENCODE_CONFIG, "utf8")).model : null;
+      const slash = typeof model === "string" ? model.indexOf("/") : -1;
+      if (slash > 0) return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) };
+    } catch {}
+    return undefined;
+  };
+  // Resolves once the prompt is sent, never when it is answered: the prompt's own promise
+  // settles only after the model replies, and the event loop must not wait for that.
+  const wake = async (sid, text, label) => {
+    const model = await wakeModel(sid);
+    client.session
+      .prompt({ path: { id: sid }, body: { ...(model ? { model } : {}), parts: [{ type: "text", text }] } })
+      .catch((e) => fail(`session.prompt (${label})`, sid, e));
   };
   return {
     event: async ({ event }) => {
@@ -1482,23 +1532,25 @@ export const KarenAI = async ({ directory, client }) => {
           };
         }
       } catch {}
-      const out = karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: holds.has(sid), stop_hold_count: holds.get(sid) ?? 0, last_assistant_message: last.text, ...todo, ...(parent ? { agent_id: sid } : {}) });
+      // As in Claude Code, stop_hook_active is true on every Stop that follows a hold, so a gate
+      // that exempts it holds a session only once; bound repeated holds with the gate's strike
+      // state instead.
+      const out = await karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: holds.has(sid), stop_hold_count: holds.get(sid) ?? 0, last_assistant_message: last.text, ...todo, ...(parent ? { agent_id: sid } : {}) });
       if (out.decision !== "block") {
         holds.delete(sid);
         const offline = notice(sid, out.systemMessage);
-        if (offline) client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${offline}` }] } }).catch((e) => fail("session.prompt (notice)", sid, e));
+        if (offline) await wake(sid, `[Karen-AI] ${offline}`, "notice");
         return;
       }
       holds.set(sid, (holds.get(sid) ?? 0) + 1);
-      // Not awaited: the prompt resolves only after the model replies, and the event loop must not wait for it.
-      client.session.prompt({ path: { id: sid }, body: { parts: [{ type: "text", text: `[Karen-AI] ${out.reason ?? "blocked by policy"}` }] } }).catch((e) => fail("session.prompt (hold not delivered)", sid, e));
+      await wake(sid, `[Karen-AI] ${out.reason ?? "blocked by policy"}`, "hold not delivered");
     },
     "experimental.chat.system.transform": async (input, output) => {
       const sid = input.sessionID ?? "unknown";
       if (!rules.has(sid)) {
         const parts = [];
         for (let part = 1; part <= 64; part++) {
-          const out = karen({ hook_event_name: "SessionStart", session_id: `opencode-rules:${process.pid}:${sid}`, cwd: directory }, part);
+          const out = await karen({ hook_event_name: "SessionStart", session_id: `opencode-rules:${process.pid}:${sid}`, cwd: directory }, part);
           const context = out?.hookSpecificOutput?.additionalContext;
           if (!context) break;
           parts.push(context);
@@ -1508,7 +1560,7 @@ export const KarenAI = async ({ directory, client }) => {
       if (rules.get(sid)) output.system.push(rules.get(sid));
     },
     "tool.execute.before": async (input, output) => {
-      const out = karen({ hook_event_name: "PreToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: output.args });
+      const out = await karen({ hook_event_name: "PreToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: output.args });
       if (out.modifiedInput && typeof out.modifiedInput === "object") {
         Object.assign(output.args, out.modifiedInput);
       } else {
@@ -1521,7 +1573,7 @@ export const KarenAI = async ({ directory, client }) => {
       if (message) notices.set(input.callID, message);
     },
     "tool.execute.after": async (input, output) => {
-      const out = karen({ hook_event_name: "PostToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: input.args, tool_response: output.output });
+      const out = await karen({ hook_event_name: "PostToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: input.args, tool_response: output.output });
       const notes = [notices.get(input.callID), out.decision === "block" ? out.reason : null, notice(input.sessionID, out.systemMessage)].filter(Boolean);
       notices.delete(input.callID);
       if (notes.length) output.output = `${output.output ?? ""}\n\n[Karen-AI] ${notes.join("\n")}`;

@@ -300,6 +300,98 @@ console.log(JSON.stringify({{ counts, prompts }}));
 
 #[test]
 #[serial]
+fn karen_runtime_opencode_wake_runs_on_the_sessions_current_model() {
+    // The Karen who wakes you on the phone you're holding now, not the one you
+    // had at check-in: a prompt without a model runs on the session's creation-
+    // time model, so the hold names the live session model, then the
+    // OPENCODE_CONFIG model, and sends none only when neither is known. The
+    // bridge spawns asynchronously: spawnSync of the same binary timed out on
+    // every call under OpenCode's embedded runtime.
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::new();
+    fs::write(
+        env.policies_dir.join("gates").join("oc-hold.json"),
+        r#"{ "gates": [ { "id": "oc-hold-all", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "Keep going." } } ] }"#,
+    )
+    .unwrap();
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let source = fs::read_to_string(&plugin).unwrap();
+    assert!(
+        !source.contains("spawnSync(") && !source.contains("{ spawnSync"),
+        "the bridge must spawn asynchronously"
+    );
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+    let config = env.temp_dir.path().join("opencode-lane.json");
+    fs::write(&config, r#"{ "model": "cfgprov/cfg-model" }"#).unwrap();
+
+    let script = env.temp_dir.path().join("drive-wake.mjs");
+    fs::write(
+        &script,
+        format!(
+            r#"const {{ KarenAI }} = await import({plugin_url:?});
+const sent = [];
+const history = {{ live: [], cfg: [] }};
+const client = {{ session: {{
+  messages: async ({{ path }}) => ({{ data: history[path.id] }}),
+  get: async ({{ path }}) => ({{ data: path.id === "live" ? {{ id: path.id, model: {{ providerID: "liveprov", modelID: "live-model" }} }} : {{ id: path.id }} }}),
+  prompt: async ({{ path, body }}) => {{ sent.push({{ id: path.id, model: body.model ?? null }}); return {{ data: {{}} }}; }},
+}} }};
+const hooks = await KarenAI({{ directory: {dir:?}, client }});
+for (const id of ["live", "cfg"]) {{
+  history[id].push({{ info: {{ id: id + "-m1", role: "assistant" }}, parts: [{{ type: "text", text: "Stopping." }}] }});
+  await hooks.event({{ event: {{ type: "session.idle", properties: {{ sessionID: id }} }} }});
+}}
+console.log(JSON.stringify(sent));
+"#,
+            dir = project_dir.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .env("OPENCODE_CONFIG", &config)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sent: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    assert_eq!(
+        sent,
+        serde_json::json!([
+            { "id": "live", "model": { "providerID": "liveprov", "modelID": "live-model" } },
+            { "id": "cfg", "model": { "providerID": "cfgprov", "modelID": "cfg-model" } }
+        ]),
+        "{sent}"
+    );
+}
+
+#[test]
+#[serial]
 fn karen_runtime_opencode_stop_payload_counts_consecutive_holds() {
     // The Karen who asks more than once but knows when to stop asking: a
     // gate exempting every continuation can be outwaited with one more
