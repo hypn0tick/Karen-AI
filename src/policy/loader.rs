@@ -264,14 +264,11 @@ pub struct PolicySet {
     pub changes: Vec<MergeChange>,
 }
 
+/// Why a file, or one gate in it, did not load. Only a broken built-in layer
+/// fails a whole load; anywhere else the error becomes a [`MergeIssue`] and
+/// the rest of the policy still loads.
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
-    #[error("cannot read policy root {root}: {source}")]
-    Root {
-        root: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
     #[error("cannot read {path}: {source}")]
     Io {
         path: PathBuf,
@@ -314,10 +311,11 @@ const BUILTIN_GATES: &str = include_str!("builtin.json");
 /// The project layer belongs to the repository, not to each checkout, so a
 /// session finds it from its working directory without any wiring: the root
 /// named explicitly (`--policies`, then `KAREN_POLICIES`), else the nearest
-/// `.karen/policies` from the working directory up to the repository root,
-/// else the repository's `karen.policies` setting, which every worktree of the
-/// repository shares (`git config karen.policies <path>`). The Karen who
-/// checks where she's standing before she checks the building.
+/// `.karen/policies` from the working directory up to the repository root (up
+/// to the user's home outside a repository, in the working directory alone
+/// outside both), else the repository's `karen.policies` setting, which every
+/// worktree of the repository shares (`git config karen.policies <path>`).
+/// The Karen who checks where she's standing before she checks the building.
 #[derive(Debug, Clone, Default)]
 pub struct Roots {
     pub user: Option<PathBuf>,
@@ -355,13 +353,11 @@ impl Roots {
             };
         };
         let repo = start.ancestors().find(|d| d.join(".git").exists());
-        // The walk stops at the repository root, and never climbs above the
-        // user's home: a root there belongs to another project.
-        let home = crate::home::user_home().filter(|h| start.starts_with(h));
+        let home = crate::home::user_home();
+        let floor = walk_floor(&start, repo, home.as_deref());
         let in_tree = start
             .ancestors()
-            .take_while(|d| repo.is_none_or(|r| d.starts_with(r)))
-            .take_while(|d| home.as_ref().is_none_or(|h| d.starts_with(h)))
+            .take_while(|d| d.starts_with(floor))
             .map(|a| a.join(".karen").join("policies"))
             .find(|p| p.is_dir() && !same_dir(p, user.as_deref()));
         let (project, found_by) = match in_tree {
@@ -472,6 +468,20 @@ fn git_config_value(config: &str, section: &str, key: &str) -> Option<String> {
     found
 }
 
+/// The highest directory the in-tree walk reads: the deeper of the repository
+/// root and the user's home that contain `start`, else `start` alone. A
+/// `.karen/policies` above the repository belongs to another project, one
+/// above the home to another user, and one above a directory in neither to
+/// whoever owns that tree.
+fn walk_floor<'a>(start: &'a Path, repo: Option<&'a Path>, home: Option<&'a Path>) -> &'a Path {
+    [repo, home]
+        .into_iter()
+        .flatten()
+        .filter(|boundary| start.starts_with(boundary))
+        .max_by_key(|boundary| boundary.components().count())
+        .unwrap_or(start)
+}
+
 fn same_dir(a: &Path, b: Option<&Path>) -> bool {
     b.is_some_and(|b| match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -479,16 +489,49 @@ fn same_dir(a: &Path, b: Option<&Path>) -> bool {
     })
 }
 
-/// Something the merge refused or could not apply. The merged policy still
-/// loads, because a load failure fails open: one bad file in a project must
-/// never switch off every other layer's gates.
+/// Something a layer could not load, or the merge refused or could not apply.
+/// The rest of the policy still loads: a broken file, gate or rule is left out
+/// alone and named here, because one bad file in a project must never switch
+/// off every other gate.
 #[derive(Debug, Clone)]
 pub struct MergeIssue {
     pub layer: Layer,
     pub message: String,
-    /// A refused change (a locked gate, a reused id without `override`):
-    /// `karen validate` fails on it. Otherwise a warning.
-    pub refused: bool,
+    pub kind: IssueKind,
+}
+
+/// What an issue costs. Every kind but a warning fails `karen validate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueKind {
+    /// Applied as written, with something worth knowing (a disable or an
+    /// override that matched nothing).
+    Warning,
+    /// A change the merge refused: a locked gate, a reused id without
+    /// `override`. The earlier gate stays enforced.
+    Refused,
+    /// An explicitly named project root does not exist.
+    MissingRoot,
+    /// A file, a gate or a rule that could not be read, parsed or compiled,
+    /// and is not enforced.
+    LoadFailed,
+}
+
+impl IssueKind {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::Refused => "refused",
+            Self::MissingRoot => "missing_root",
+            Self::LoadFailed => "load_failed",
+        }
+    }
+
+    /// `karen validate` fails on every kind but a warning.
+    #[must_use]
+    pub const fn fails_validation(self) -> bool {
+        !matches!(self, Self::Warning)
+    }
 }
 
 /// A gate an later layer replaced or disabled.
@@ -514,31 +557,35 @@ pub fn load(root: &Path) -> Result<PolicySet, LoadError> {
     })
 }
 
-/// Load and merge every layer in `roots` over the built-in gates.
+/// Load and merge every layer in `roots` over the built-in gates. A file, gate
+/// or rule in the user or project layer that cannot be read, parsed or
+/// compiled is left out and reported in [`PolicySet::issues`], as is an
+/// explicitly named project root that does not exist: every other gate stays
+/// enforced. The Karen who refuses the one form you filled in wrong, not the
+/// whole counter.
 ///
 /// # Errors
 ///
-/// Returns [`LoadError::Root`] when an explicitly named project root does not
-/// exist, [`LoadError::Io`] when a policy file cannot be read,
-/// [`LoadError::Json5`] or [`LoadError::Toml`] when a file does not parse,
-/// and [`LoadError::Gate`] when a gate fails to compile — the Karen who
-/// refuses to load a policy she cannot enforce.
+/// Returns a [`LoadError`] only when the built-in layer compiled into Karen
+/// does not load.
 pub fn load_roots(roots: &Roots) -> Result<PolicySet, LoadError> {
+    let mut issues = Vec::new();
     let mut layers = vec![builtin_layer()?];
     if let Some(user) = &roots.user {
-        layers.push(read_layer(Layer::User, user)?);
+        layers.push(read_layer(Layer::User, user, &mut issues));
     }
     if let Some(project) = &roots.project {
         if project.is_dir() {
-            layers.push(read_layer(Layer::Project, project)?);
+            layers.push(read_layer(Layer::Project, project, &mut issues));
         } else if roots.explicit {
-            return Err(LoadError::Root {
-                root: project.clone(),
-                source: std::io::Error::new(std::io::ErrorKind::NotFound, "policy root missing"),
+            issues.push(MergeIssue {
+                layer: Layer::Project,
+                message: format!("is missing: no policy directory at {}", project.display()),
+                kind: IssueKind::MissingRoot,
             });
         }
     }
-    let mut set = merge(layers, roots.primary())?;
+    let mut set = merge(layers, roots.primary(), issues);
     set.found_by = roots.found_by.filter(|_| {
         set.layers
             .iter()
@@ -576,22 +623,45 @@ fn builtin_layer() -> Result<LayerFiles, LoadError> {
     })
 }
 
-fn read_layer(layer: Layer, root: &Path) -> Result<LayerFiles, LoadError> {
-    let table = load_config_table(root)?;
-    let config: Config = config_from(&table, root)?;
-    let gates = load_gates(&root.join(&config.policy.gates_dir), layer)?;
-    if config.policy.validate_on_load {
-        validate_once(root, &gates)?;
+/// Where one layer's load failures are reported.
+struct Report<'a> {
+    layer: Layer,
+    issues: &'a mut Vec<MergeIssue>,
+}
+
+impl Report<'_> {
+    /// `what` is left out of the policy because of `error`.
+    fn skip(&mut self, what: &str, error: impl std::fmt::Display) {
+        self.issues.push(MergeIssue {
+            layer: self.layer,
+            message: format!("skips {what}: {error}"),
+            kind: IssueKind::LoadFailed,
+        });
     }
-    let rules = load_rules(&root.join(&config.policy.rules_dir))?;
-    Ok(LayerFiles {
+}
+
+/// Read one layer. Whatever cannot be loaded is reported and left out; the
+/// rest of the layer still loads.
+fn read_layer(layer: Layer, root: &Path, issues: &mut Vec<MergeIssue>) -> LayerFiles {
+    let mut report = Report { layer, issues };
+    let table = load_config_table(root, &mut report);
+    // Every section of `table` deserialized on its own, so the whole does too.
+    let config = config_from(&table, root).unwrap_or_default();
+    let gates = load_gates(&root.join(&config.policy.gates_dir), layer, &mut report);
+    let gates = if config.policy.validate_on_load {
+        validate_once(root, gates, &mut report)
+    } else {
+        gates
+    };
+    let rules = load_rules(&root.join(&config.policy.rules_dir), &mut report);
+    LayerFiles {
         layer,
         root: Some(root.to_path_buf()),
         table,
         disable: config.policy.disable,
         gates,
         rules,
-    })
+    }
 }
 
 fn tag(gate: Result<Gate, CompileError>, layer: Layer, source: &str) -> Result<Gate, LoadError> {
@@ -602,27 +672,85 @@ fn tag(gate: Result<Gate, CompileError>, layer: Layer, source: &str) -> Result<G
 }
 
 /// Apply the layers in order: each layer's disables, then its gates.
-fn merge(layers: Vec<LayerFiles>, primary: PathBuf) -> Result<PolicySet, LoadError> {
+fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>) -> PolicySet {
     let mut gates: Vec<Gate> = Vec::new();
     let mut rules: Vec<Rule> = Vec::new();
     let mut table = toml::Table::new();
-    let mut issues = Vec::new();
+    let mut last = Layer::Builtin;
     let mut changes = Vec::new();
     let mut roots = Vec::new();
 
     for files in layers {
         let layer = files.layer;
+        last = layer;
         if let Some(root) = files.root {
             roots.push((layer, root));
         }
         merge_tables(&mut table, files.table);
+        let mut merged = Merged {
+            gates: &mut gates,
+            issues: &mut issues,
+            changes: &mut changes,
+            layer,
+        };
+        merged.disable(files.disable);
+        merged.add(files.gates);
 
-        for id in files.disable {
+        // A rule replaces an earlier layer's rule at the same path under
+        // `rules/`; rules of one layer never replace each other.
+        let ids: std::collections::HashSet<&str> =
+            files.rules.iter().map(|r| r.id.as_str()).collect();
+        rules.retain(|r| !ids.contains(r.id.as_str()));
+        rules.extend(files.rules);
+    }
+
+    gates.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
+    // Each layer's sections deserialized alone; a merge that still does not
+    // keeps the defaults rather than dropping a single gate.
+    let config = config_from(&table, &primary).unwrap_or_else(|error| {
+        issues.push(MergeIssue {
+            layer: last,
+            message: format!("skips the merged config: {error}"),
+            kind: IssueKind::LoadFailed,
+        });
+        Config::default()
+    });
+    PolicySet {
+        gates,
+        rules,
+        config,
+        root: primary,
+        layers: roots,
+        found_by: None,
+        issues,
+        changes,
+    }
+}
+
+/// The gates merged so far, and where one layer's changes to them are recorded.
+struct Merged<'a> {
+    gates: &'a mut Vec<Gate>,
+    issues: &'a mut Vec<MergeIssue>,
+    changes: &'a mut Vec<MergeChange>,
+    layer: Layer,
+}
+
+impl Merged<'_> {
+    /// Switch off each earlier gate in `ids`, unless it is locked.
+    fn disable(&mut self, ids: Vec<String>) {
+        let Self {
+            gates,
+            issues,
+            changes,
+            layer,
+        } = self;
+        let layer = *layer;
+        for id in ids {
             match gates.iter().position(|g| g.id == id) {
                 None => issues.push(MergeIssue {
                     layer,
                     message: format!("disables `{id}`, which no earlier layer defines"),
-                    refused: false,
+                    kind: IssueKind::Warning,
                 }),
                 Some(i) if gates[i].locked => issues.push(MergeIssue {
                     layer,
@@ -630,7 +758,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf) -> Result<PolicySet, LoadErr
                         "tries to disable `{id}`, locked by the {} layer; it stays enforced",
                         gates[i].layer
                     ),
-                    refused: true,
+                    kind: IssueKind::Refused,
                 }),
                 Some(i) => {
                     gates.remove(i);
@@ -642,8 +770,19 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf) -> Result<PolicySet, LoadErr
                 }
             }
         }
+    }
 
-        for gate in files.gates {
+    /// Add each gate of `incoming`, replacing an earlier gate only with
+    /// `override` and never a locked one.
+    fn add(&mut self, incoming: Vec<Gate>) {
+        let Self {
+            gates,
+            issues,
+            changes,
+            layer,
+        } = self;
+        let layer = *layer;
+        for gate in incoming {
             match gates.iter().position(|g| g.id == gate.id) {
                 None => {
                     if gate.replaces {
@@ -653,7 +792,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf) -> Result<PolicySet, LoadErr
                                 "`{}` sets override but no earlier layer defines it",
                                 gate.id
                             ),
-                            refused: false,
+                            kind: IssueKind::Warning,
                         });
                     }
                     gates.push(gate);
@@ -664,7 +803,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf) -> Result<PolicySet, LoadErr
                         "tries to replace `{}`, locked by the {} layer; the {} gate stays",
                         gate.id, gates[i].layer, gates[i].layer
                     ),
-                    refused: true,
+                    kind: IssueKind::Refused,
                 }),
                 Some(i) if gates[i].layer == layer || !gate.replaces => issues.push(MergeIssue {
                     layer,
@@ -672,7 +811,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf) -> Result<PolicySet, LoadErr
                         "reuses the id `{}` ({}) without `\"override\": true`; the first definition stays",
                         gate.id, gates[i].source
                     ),
-                    refused: true,
+                    kind: IssueKind::Refused,
                 }),
                 Some(i) => {
                     changes.push(MergeChange {
@@ -684,25 +823,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf) -> Result<PolicySet, LoadErr
                 }
             }
         }
-
-        for rule in files.rules {
-            rules.retain(|r| r.id != rule.id);
-            rules.push(rule);
-        }
     }
-
-    gates.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
-    let config = config_from(&table, &primary)?;
-    Ok(PolicySet {
-        gates,
-        rules,
-        config,
-        root: primary,
-        layers: roots,
-        found_by: None,
-        issues,
-        changes,
-    })
 }
 
 /// Later layers win per key; arrays are unioned in order.
@@ -737,24 +858,34 @@ fn config_from(table: &toml::Table, root: &Path) -> Result<Config, LoadError> {
 /// the root and a hash of the patterns themselves (plus Karen's version)
 /// records a clean validation, so an unchanged policy skips the work and any
 /// changed pattern validates again, whatever the file's size or modification
-/// time says. Without a usable cache directory she validates every time.
-fn validate_once(root: &Path, gates: &[Gate]) -> Result<(), LoadError> {
-    let marker = fingerprint(root, gates).map(|(root_id, files_id)| {
+/// time says. Without a usable cache directory she validates every time. A
+/// gate whose pattern does not compile is reported and left out, and its
+/// layer earns no marker, so it is reported again on every load.
+fn validate_once(root: &Path, gates: Vec<Gate>, report: &mut Report<'_>) -> Vec<Gate> {
+    let marker = fingerprint(root, &gates).map(|(root_id, files_id)| {
         (
             format!("validated-{root_id:016x}-"),
             crate::home::cache_dir().join(format!("validated-{root_id:016x}-{files_id:016x}")),
         )
     });
     if marker.as_ref().is_some_and(|(_, path)| path.is_file()) {
-        return Ok(());
+        return gates;
     }
-    for gate in gates {
-        gate.validate().map_err(Box::new)?;
-    }
-    if let Some((prefix, path)) = marker {
+    let total = gates.len();
+    let valid: Vec<Gate> = gates
+        .into_iter()
+        .filter(|gate| match gate.validate() {
+            Ok(()) => true,
+            Err(error) => {
+                report.skip(&format!("gate `{}` ({})", gate.id, gate.source), error);
+                false
+            }
+        })
+        .collect();
+    if let Some((prefix, path)) = marker.filter(|_| valid.len() == total) {
         record_validation(&prefix, &path);
     }
-    Ok(())
+    valid
 }
 
 /// Write the marker and drop older markers of the same root. Best effort: a
@@ -798,19 +929,45 @@ fn fnv1a(seed: u64, bytes: &[u8]) -> u64 {
     })
 }
 
-fn load_config_table(root: &Path) -> Result<toml::Table, LoadError> {
+/// The layer's `config.toml`, keeping only the sections that deserialize: a
+/// typo in one section keeps that section's defaults and leaves the others
+/// applied.
+fn load_config_table(root: &Path, report: &mut Report<'_>) -> toml::Table {
     let path = root.join("config.toml");
     if !path.is_file() {
-        return Ok(toml::Table::new());
+        return toml::Table::new();
     }
-    let text = std::fs::read_to_string(&path).map_err(|source| LoadError::Io {
-        path: path.clone(),
-        source,
-    })?;
-    toml::from_str(&text).map_err(|source| LoadError::Toml {
-        path,
-        source: Box::new(source),
-    })
+    let parsed = std::fs::read_to_string(&path)
+        .map_err(|source| LoadError::Io {
+            path: path.clone(),
+            source,
+        })
+        .and_then(|text| {
+            toml::from_str::<toml::Table>(&text).map_err(|source| LoadError::Toml {
+                path: path.clone(),
+                source: Box::new(source),
+            })
+        });
+    let table = match parsed {
+        Ok(table) => table,
+        Err(error) => {
+            report.skip("its config", error);
+            return toml::Table::new();
+        }
+    };
+    table
+        .into_iter()
+        .filter(|(key, value)| {
+            let section = toml::Table::from_iter([(key.clone(), value.clone())]);
+            match config_from(&section, root) {
+                Ok(_) => true,
+                Err(error) => {
+                    report.skip(&format!("`[{key}]` of its config"), error);
+                    false
+                }
+            }
+        })
+        .collect()
 }
 
 fn gate_defs(parsed: GateFile) -> Vec<GateDef> {
@@ -820,85 +977,118 @@ fn gate_defs(parsed: GateFile) -> Vec<GateDef> {
     }
 }
 
-fn load_gates(dir: &Path, layer: Layer) -> Result<Vec<Gate>, LoadError> {
+/// Every gate under `dir`. A file that cannot be read or parsed, or a gate in
+/// it that does not compile, is reported and left out; the file's other gates
+/// still load.
+fn load_gates(dir: &Path, layer: Layer, report: &mut Report<'_>) -> Vec<Gate> {
     let mut gates = Vec::new();
     if !dir.is_dir() {
-        return Ok(gates);
-    }
-    let mut files = json5_files(dir)?;
-    files.sort();
-    for path in files {
-        let text = std::fs::read_to_string(&path).map_err(|source| LoadError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        let parsed: GateFile = json5::from_str(&text).map_err(|source| LoadError::Json5 {
-            path: path.clone(),
-            source: Box::new(source),
-        })?;
-        let source = path.display().to_string();
-        for def in gate_defs(parsed) {
-            gates.push(tag(Gate::compile(def), layer, &source)?);
-        }
-    }
-    Ok(gates)
-}
-
-fn load_rules(dir: &Path) -> Result<Vec<Rule>, LoadError> {
-    let mut rules = Vec::new();
-    if !dir.is_dir() {
-        return Ok(rules);
+        return gates;
     }
     let mut files = Vec::new();
-    collect_with_extension(dir, "md", &mut files)?;
+    for ext in ["json5", "jsonc", "json"] {
+        collect_with_extension(dir, ext, &mut files, report);
+    }
     files.sort();
     for path in files {
-        let content = std::fs::read_to_string(&path).map_err(|source| LoadError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        let id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("rule")
-            .to_string();
-        let (runtimes, content) = rule_front_matter(&path, &content)?;
+        let parsed = std::fs::read_to_string(&path)
+            .map_err(|source| LoadError::Io {
+                path: path.clone(),
+                source,
+            })
+            .and_then(|text| {
+                json5::from_str::<GateFile>(&text).map_err(|source| LoadError::Json5 {
+                    path: path.clone(),
+                    source: Box::new(source),
+                })
+            });
+        let parsed = match parsed {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                report.skip("a gate file", error);
+                continue;
+            }
+        };
+        let source = path.display().to_string();
+        for def in gate_defs(parsed) {
+            match tag(Gate::compile(def), layer, &source) {
+                Ok(gate) => gates.push(gate),
+                Err(error) => report.skip(&format!("a gate in {source}"), error),
+            }
+        }
+    }
+    gates
+}
+
+/// Every rule under `dir`, identified by its path under `dir` without the
+/// extension (`claude/style` for `rules/claude/style.md`). A rule that cannot
+/// be read or whose front matter is invalid is reported and left out.
+fn load_rules(dir: &Path, report: &mut Report<'_>) -> Vec<Rule> {
+    let mut rules = Vec::new();
+    if !dir.is_dir() {
+        return rules;
+    }
+    let mut files = Vec::new();
+    collect_with_extension(dir, "md", &mut files, report);
+    files.sort();
+    for path in files {
+        let loaded = std::fs::read_to_string(&path)
+            .map_err(|source| LoadError::Io {
+                path: path.clone(),
+                source,
+            })
+            .and_then(|text| rule_front_matter(&path, &text));
+        let (runtimes, content) = match loaded {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                report.skip("a rule", error);
+                continue;
+            }
+        };
         rules.push(Rule {
-            id,
+            id: rule_id(dir, &path),
             path,
             content,
             runtimes,
         });
     }
-    Ok(rules)
+    rules
 }
 
-fn json5_files(dir: &Path) -> Result<Vec<PathBuf>, LoadError> {
-    let mut files = Vec::new();
-    for ext in ["json5", "jsonc", "json"] {
-        collect_with_extension(dir, ext, &mut files)?;
-    }
-    Ok(files)
+/// `path` under `dir`, without its extension, `/`-separated on every platform.
+fn rule_id(dir: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(dir).unwrap_or(path).with_extension("");
+    relative
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
-fn collect_with_extension(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) -> Result<(), LoadError> {
-    let entries = std::fs::read_dir(dir).map_err(|source| LoadError::Io {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|source| LoadError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
+/// Every file under `dir` with extension `ext`. A directory she cannot read is
+/// reported and skipped.
+fn collect_with_extension(dir: &Path, ext: &str, out: &mut Vec<PathBuf>, report: &mut Report<'_>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) => {
+            report.skip(
+                "a directory",
+                LoadError::Io {
+                    path: dir.to_path_buf(),
+                    source,
+                },
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_with_extension(&path, ext, out)?;
+            collect_with_extension(&path, ext, out, report);
         } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
             out.push(path);
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1028,51 +1218,227 @@ mod tests {
         );
     }
 
-    #[test]
-    fn typos_do_not_become_always_gates() {
-        // A typo'd `match` once silently defaulted to a matcher that
-        // matched EVERYTHING — blanket enforcement born from a spelling
-        // error, blessed by validate. The strict schema refuses the
-        // typo and names the key. She checks the spelling before she
-        // checks you.
+    /// A policy root holding `files`, each a path relative to the root and its text.
+    fn root_with(files: &[(&str, &str)]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp policy root");
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("gates")).expect("gates dir");
-        std::fs::create_dir_all(root.join("rules")).expect("rules dir");
-        std::fs::write(
-            root.join("gates").join("typo.json"),
-            r#"{ "id": "typo-gate", "event": "PreToolUse", "matc": { "all": [ { "type": "command_contains", "value": "git push --force" } ] }, "action": { "type": "deny", "reason": "never fires on benign commands" } }"#,
-        )
-        .expect("typo gate");
-        let err = load_project(root).expect_err("a typo'd gate key must fail to load");
-        let msg = err.to_string();
+        for (rel, text) in files {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("dirs");
+            std::fs::write(path, text).expect("write");
+        }
+        dir
+    }
+
+    const GOOD_GATE: &str = r#"{ "id": "good", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "no" } }"#;
+
+    fn ids(set: &PolicySet) -> Vec<&str> {
+        set.gates.iter().map(|g| g.id.as_str()).collect()
+    }
+
+    fn issue(set: &PolicySet, kind: IssueKind) -> &MergeIssue {
+        set.issues
+            .iter()
+            .find(|i| i.kind == kind)
+            .unwrap_or_else(|| panic!("no {kind:?} issue in {:?}", set.issues))
+    }
+
+    /// The built-in gates and the good project gate load; `dropped` does not.
+    fn assert_only_the_broken_part_is_dropped(set: &PolicySet, dropped: &str) {
+        let ids = ids(set);
         assert!(
-            msg.contains("matc"),
-            "the error must name the offending key: {msg}"
+            ids.contains(&"good"),
+            "the rest of the layer loads: {ids:?}"
         );
         assert!(
-            msg.contains("match"),
-            "the error must list the key she expected: {msg}"
+            ids.contains(&"karen-no-force-push-default-branch"),
+            "the built-in layer stays enforced: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&dropped),
+            "the broken gate is not enforced: {ids:?}"
         );
     }
 
     #[test]
+    fn typos_do_not_become_always_gates() {
+        // A typo'd `match` once silently defaulted to a matcher that
+        // matched EVERYTHING — blanket enforcement born from a spelling
+        // error, blessed by validate. The strict schema refuses the typo,
+        // names the key, and drops only that file: one bad file in a
+        // project never switches off the other gates. She checks the
+        // spelling before she checks you.
+        let dir = root_with(&[
+            ("gates/good.json", GOOD_GATE),
+            (
+                "gates/typo.json",
+                r#"{ "id": "typo-gate", "event": "PreToolUse", "matc": { "all": [ { "type": "command_contains", "value": "rm -rf" } ] }, "action": { "type": "deny", "reason": "never fires on benign commands" } }"#,
+            ),
+        ]);
+        let set = load_project(dir.path()).expect("the other layers still load");
+        assert_only_the_broken_part_is_dropped(&set, "typo-gate");
+        let found = issue(&set, IssueKind::LoadFailed);
+        assert_eq!(found.layer, Layer::Project);
+        for needle in ["typo.json", "matc", "match"] {
+            assert!(
+                found.message.contains(needle),
+                "names `{needle}`: {found:?}"
+            );
+        }
+    }
+
+    #[test]
     fn typos_in_config_are_named_not_swallowed() {
-        // `faile_open` under [engine] once sailed through silently and
-        // the default took over — intent filed in the trash, no
-        // receipt. Now she names it. She checks the fine print on both
+        // `faile_open` under [engine] once sailed through silently and the
+        // default took over — intent filed in the trash, no receipt. Now
+        // she names it, keeps the defaults for that section, and still
+        // enforces the layer's gates. She checks the fine print on both
         // sides of the desk.
-        let dir = tempfile::tempdir().expect("temp policy root");
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("gates")).expect("gates dir");
-        std::fs::create_dir_all(root.join("rules")).expect("rules dir");
-        std::fs::write(root.join("config.toml"), "[engine]\nfaile_open = true\n")
-            .expect("typo config");
-        let err = load_project(root).expect_err("a typo'd config key must fail to load");
-        let msg = err.to_string();
+        let dir = root_with(&[
+            (
+                "config.toml",
+                "[engine]\nfaile_open = false\n[state]\nbackend = \"memory\"\n",
+            ),
+            ("gates/good.json", GOOD_GATE),
+        ]);
+        let set = load_project(dir.path()).expect("the other layers still load");
+        assert_only_the_broken_part_is_dropped(&set, "none");
         assert!(
-            msg.contains("faile_open"),
-            "the error must name the offending key: {msg}"
+            set.config.engine.fail_open,
+            "the broken section keeps its defaults"
         );
+        assert_eq!(
+            set.config.state.backend, "memory",
+            "the sound section applies"
+        );
+        let found = issue(&set, IssueKind::LoadFailed);
+        assert!(found.message.contains("faile_open"), "{found:?}");
+    }
+
+    #[test]
+    fn a_gate_that_cannot_compile_is_dropped_alone() {
+        let dir = root_with(&[
+            ("gates/good.json", GOOD_GATE),
+            (
+                "gates/bad.json",
+                r#"{ "gates": [
+                    { "id": "bad-regex", "event": "PreToolUse", "match": { "all": [ { "type": "command_regex", "pattern": "[invalid" } ] }, "action": { "type": "deny", "reason": "x" } },
+                    { "id": "bad-event", "event": "FooBarBaz", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "x" } },
+                    { "id": "sibling", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "x" } }
+                ] }"#,
+            ),
+        ]);
+        let set = load_project(dir.path()).expect("the other layers still load");
+        assert_only_the_broken_part_is_dropped(&set, "bad-regex");
+        assert!(!ids(&set).contains(&"bad-event"), "{:?}", ids(&set));
+        assert!(
+            ids(&set).contains(&"sibling"),
+            "a sound gate in the same file loads"
+        );
+        let messages: Vec<&str> = set.issues.iter().map(|i| i.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("bad-regex"))
+                && messages.iter().any(|m| m.contains("bad-event")),
+            "each dropped gate is named: {messages:?}"
+        );
+        assert!(set.issues.iter().all(|i| i.kind == IssueKind::LoadFailed));
+    }
+
+    #[test]
+    fn a_broken_pattern_is_never_remembered_as_validated() {
+        // A clean marker covers the whole layer; a layer that dropped a gate
+        // never earns one, so the broken gate is reported on every load.
+        let dir = root_with(&[(
+            "gates/bad.json",
+            r#"{ "id": "bad-regex", "event": "PreToolUse", "match": { "all": [ { "type": "command_regex", "pattern": "[invalid" } ] }, "action": { "type": "deny", "reason": "x" } }"#,
+        )]);
+        for _ in 0..2 {
+            let set = load_project(dir.path()).expect("loads");
+            assert!(!ids(&set).contains(&"bad-regex"));
+            assert!(
+                issue(&set, IssueKind::LoadFailed)
+                    .message
+                    .contains("bad-regex")
+            );
+        }
+    }
+
+    #[test]
+    fn a_rule_with_broken_front_matter_is_skipped_alone() {
+        let dir = root_with(&[
+            ("rules/sound.md", "# Sound\n"),
+            ("rules/broken.md", "---\nruntime: claude\n---\n# Broken\n"),
+            ("gates/good.json", GOOD_GATE),
+        ]);
+        let set = load_project(dir.path()).expect("the other layers still load");
+        let rules: Vec<&str> = set.rules.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(rules, ["sound"]);
+        assert_only_the_broken_part_is_dropped(&set, "none");
+        let found = issue(&set, IssueKind::LoadFailed);
+        assert!(found.message.contains("broken.md"), "{found:?}");
+        assert!(
+            found.message.contains("unknown front matter key"),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_named_root_keeps_every_other_layer() {
+        let dir = tempfile::tempdir().expect("temp");
+        let missing = dir.path().join("not-here");
+        let set = load_project(&missing).expect("the built-in layer still loads");
+        assert!(ids(&set).contains(&"karen-no-force-push-default-branch"));
+        let found = issue(&set, IssueKind::MissingRoot);
+        assert_eq!(found.layer, Layer::Project);
+        assert!(found.message.contains("not-here"), "{found:?}");
+        assert!(set.found_by.is_none(), "no project layer was read");
+    }
+
+    #[test]
+    fn rules_in_subdirectories_keep_their_own_ids() {
+        let dir = root_with(&[
+            ("rules/claude/style.md", "# Claude style\n"),
+            ("rules/codex/style.md", "# Codex style\n"),
+        ]);
+        let set = load_project(dir.path()).expect("loads");
+        let mut rules: Vec<&str> = set.rules.iter().map(|r| r.id.as_str()).collect();
+        rules.sort_unstable();
+        assert_eq!(rules, ["claude/style", "codex/style"]);
+    }
+
+    #[test]
+    fn a_later_layer_replaces_a_rule_by_its_path() {
+        let user = root_with(&[
+            ("rules/style.md", "# user\n"),
+            ("rules/only-user.md", "# u\n"),
+        ]);
+        let project = root_with(&[("rules/style.md", "# project\n")]);
+        let set = load_roots(&Roots {
+            user: Some(user.path().to_path_buf()),
+            project: Some(project.path().to_path_buf()),
+            explicit: true,
+            found_by: Some("explicit"),
+        })
+        .expect("loads");
+        let rules: Vec<(&str, &str)> = set
+            .rules
+            .iter()
+            .map(|r| (r.id.as_str(), r.content.as_str()))
+            .collect();
+        assert_eq!(rules.len(), 2, "{rules:?}");
+        assert!(rules.contains(&("style", "# project\n")), "{rules:?}");
+        assert!(rules.contains(&("only-user", "# u\n")), "{rules:?}");
+    }
+
+    #[test]
+    fn the_in_tree_walk_stops_at_the_deepest_known_boundary() {
+        let start = Path::new("/home/me/src/repo/crates/core");
+        let repo = Path::new("/home/me/src/repo");
+        let home = Path::new("/home/me");
+        assert_eq!(walk_floor(start, Some(repo), Some(home)), repo);
+        assert_eq!(walk_floor(start, None, Some(home)), home);
+        assert_eq!(walk_floor(start, Some(repo), None), repo);
+        // Outside a repository and outside the home, only the working
+        // directory itself is hers to read.
+        assert_eq!(walk_floor(start, None, None), start);
     }
 }

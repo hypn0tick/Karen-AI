@@ -22,7 +22,9 @@ pub struct GateDef {
     pub description: Option<String>,
     /// Event name, e.g. `PreToolUse`, `PostToolUse`, `UserPromptSubmit`. The Karen who listens.
     pub event: String,
-    /// Optional tool filter (`Bash`, `Edit`, `Write`, ...). The Karen who filters.
+    /// Optional tool filter: an exact tool name (`Bash`, `Edit`, ...), matched
+    /// case-insensitively, or a regex over it (`Edit|Write`). It must compile
+    /// as a regex either way. The Karen who filters.
     #[serde(default)]
     pub tool: Option<String>,
     #[serde(default = "default_priority")]
@@ -366,13 +368,16 @@ impl Gate {
         })
     }
 
-    /// Compile every match pattern now. A `tool` filter that is not a regex
-    /// still works as an exact tool name, so it is not checked here.
+    /// Compile every pattern now: the `tool` filter and every match pattern.
+    /// A `tool` filter matches an exact tool name too, but one that does not
+    /// compile as a regex is refused here all the same, because a typo there
+    /// leaves a gate that silently never applies to the tool it was written
+    /// for.
     ///
     /// # Errors
     ///
-    /// Returns [`CompileError::Regex`] for the first match pattern that is not
-    /// a valid regex.
+    /// Returns [`CompileError::Regex`] for the first pattern, the `tool` filter
+    /// included, that is not a valid regex.
     pub fn validate(&self) -> Result<(), CompileError> {
         self.tool_regex
             .iter()

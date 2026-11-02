@@ -49,10 +49,10 @@ fn karen_verifies_fail_open_on_empty_stdin() {
 #[test]
 #[serial]
 fn karen_verifies_missing_policy_root_fails_open_out_loud() {
-    // The Karen who will not be silently absent: with no policy root she
-    // still lets the call through, because a broken install must not brick
-    // the agent, but she says so in the open, since a guard nobody knows is
-    // off duty is worse than no guard at all.
+    // The Karen who will not be silently absent: with the named project root
+    // missing she still lets the call through, because a broken install must
+    // not brick the agent, but she says so in the open, since a guard nobody
+    // knows is short a layer is worse than no guard at all.
     let env = TestEnv::new();
     let missing = env.policies_dir.join("not-here");
     let mut cmd = env.karen_cmd(&["hook", "--adapter", "claude-classic"]);
@@ -77,11 +77,37 @@ fn karen_verifies_missing_policy_root_fails_open_out_loud() {
         "nothing is blocked: {value}"
     );
     let message = value["systemMessage"].as_str().unwrap_or_default();
-    assert!(message.contains("not enforcing"), "{value}");
+    assert!(message.contains("the project layer is missing"), "{value}");
     assert!(
         message.contains("not-here"),
         "names the root it tried: {value}"
     );
+}
+
+#[test]
+#[serial]
+fn karen_keeps_the_built_in_layer_when_the_project_root_is_missing() {
+    // A missing project root once switched every gate off, the built-in ones
+    // included. The layers that did load still hold.
+    let env = TestEnv::new();
+    let mut cmd = env.karen_cmd(&["hook", "--adapter", "claude-classic"]);
+    cmd.env("KAREN_POLICIES", env.policies_dir.join("not-here"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn hook");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(br#"{"hook_event_name":"PreToolUse","session_id":"s","tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}"#)
+        .expect("write stdin");
+    drop(child.stdin.take());
+    let out = child.wait_with_output().expect("wait");
+    assert_exit_code(out.status.code().unwrap_or(-1), 0);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("\"deny\""), "{stdout}");
+    assert!(stdout.contains("shared history"), "{stdout}");
 }
 
 #[test]

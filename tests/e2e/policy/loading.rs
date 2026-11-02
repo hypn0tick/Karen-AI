@@ -295,9 +295,52 @@ fn karen_catches_a_same_size_same_mtime_edit_that_breaks_a_pattern() {
         .unwrap();
     let out = hook("ls");
     assert!(
-        out.contains("not enforcing"),
-        "a broken pattern must fail the load loudly, not go silent: {out}"
+        !out.contains("\"decision\"") && !out.contains("permissionDecision"),
+        "the broken gate is not enforced: {out}"
     );
+    assert!(
+        out.contains("skips gate `edited`") && out.contains("unclosed character class"),
+        "a broken pattern is reported loudly, not left silent: {out}"
+    );
+}
+
+#[test]
+#[serial]
+fn karen_enforces_the_rest_of_a_layer_around_a_broken_file() {
+    // One malformed file in a project once switched every protection off,
+    // built-in ones included. Now only that file is left out: the layer's
+    // other gates and the built-in gates still hold, the session is told
+    // which file was skipped, and `karen validate` fails on it.
+    let env = TestEnv::with_config(DEFAULT_CONFIG, &[], &[]);
+    let gates = env.policies_dir.join("gates");
+    std::fs::write(
+        gates.join("sound.json"),
+        r#"{ "id": "sound", "event": "PreToolUse", "tool": "Bash", "match": { "all": [ { "type": "command_regex", "pattern": "^rm " } ] }, "action": { "type": "deny", "reason": "sound gate holds" } }"#,
+    )
+    .unwrap();
+    std::fs::write(gates.join("broken.json"), "{ \"id\": \"broken\", ").unwrap();
+
+    let input = json!({ "hook_event_name": "PreToolUse", "session_id": "broken-file", "tool_name": "Bash", "tool_input": { "command": "rm -rf build" } }).to_string();
+    let (code, stdout, _stderr) = env.run_hook(&input, &[]);
+    assert_exit_code(code, 0);
+    assert!(stdout.contains("sound gate holds"), "{stdout}");
+    assert!(
+        stdout.contains("skips a gate file") && stdout.contains("broken.json"),
+        "{stdout}"
+    );
+
+    let input = json!({ "hook_event_name": "PreToolUse", "session_id": "broken-file", "tool_name": "Bash", "tool_input": { "command": "git push -f origin main" } }).to_string();
+    let (code, stdout, _stderr) = env.run_hook(&input, &[]);
+    assert_exit_code(code, 0);
+    assert!(
+        stdout.contains("shared history"),
+        "the built-in layer still holds: {stdout}"
+    );
+
+    let (code, stdout, _stderr) = env.run_karen(&["validate", "--json"]);
+    assert_exit_code(code, 78);
+    let error = assert_json_error(&stdout, "POLICY_INVALID");
+    assert!(error.to_string().contains("broken.json"), "{error}");
 }
 
 #[test]

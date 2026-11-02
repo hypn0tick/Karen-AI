@@ -216,6 +216,13 @@ fn karen_finds_the_project_layer_above_the_working_directory() {
             .collect::<Vec<_>>()
     };
 
+    // Outside a repository and outside the home, only the working directory
+    // itself is read: a `.karen/policies` above it belongs to whoever owns
+    // that tree, possibly another user.
+    assert!(layers_seen(&work).is_empty());
+    assert_eq!(layers_seen(&project), ["project"]);
+    // Inside a repository, the walk climbs to the repository root.
+    std::fs::create_dir_all(project.join(".git")).unwrap();
     assert_eq!(layers_seen(&work), ["project"]);
 
     // Under the home directory, the user layer is not found twice.

@@ -175,7 +175,10 @@ console.log(JSON.stringify({{ afters, prompts }}));
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
     let afters = result["afters"].as_array().unwrap();
     assert!(
-        afters[0].as_str().unwrap().contains("not enforcing"),
+        afters[0]
+            .as_str()
+            .unwrap()
+            .contains("the project layer is missing"),
         "{result}"
     );
     assert_eq!(afters[1], "ok", "told once per session: {result}");
@@ -189,7 +192,7 @@ console.log(JSON.stringify({{ afters, prompts }}));
         prompts[0]
             .as_str()
             .unwrap()
-            .starts_with("s2: [Karen-AI] Karen-AI is not enforcing"),
+            .starts_with("s2: [Karen-AI] Karen-AI policy merge: the project layer is missing"),
         "{result}"
     );
 }

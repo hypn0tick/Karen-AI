@@ -43,9 +43,11 @@ impl Engine {
     ///
     /// Returns [`WatchError::Disabled`] when the loaded config turns
     /// hot reload off, and [`WatchError::Watch`] when the file watcher
-    /// cannot start. A failed *reload* is not an error: she keeps the
-    /// last good law on file and logs the offense — the Karen who never
-    /// un-enforces working policy over a broken save.
+    /// cannot start. A failed *reload* is not an error: when the reload
+    /// leaves out a file, a gate or a rule it could not load, or the named
+    /// root is gone, she keeps the last good law on file and logs the
+    /// offense — the Karen who never un-enforces working policy over a
+    /// broken save.
     ///
     /// # Panics
     ///
@@ -65,6 +67,18 @@ impl Engine {
                 // full re-read of a small directory, so she simply
                 // reloads once per event and calls it thorough.
                 match policy::load(&watch_root) {
+                    Ok(set) if set.issues.iter().any(|i| incomplete(i.kind)) => {
+                        let left_out: Vec<String> = set
+                            .issues
+                            .iter()
+                            .filter(|i| incomplete(i.kind))
+                            .map(|i| format!("the {} layer {}", i.layer, i.message))
+                            .collect();
+                        tracing::warn!(
+                            "live reload left something out; keeping the last good law on file: {}",
+                            left_out.join("; ")
+                        );
+                    }
                     Ok(set) => {
                         *shared
                             .write()
@@ -83,6 +97,14 @@ impl Engine {
         watcher.watch(&root, notify::RecursiveMode::Recursive)?;
         Ok(WatchGuard { _watcher: watcher })
     }
+}
+
+/// An issue that means the reloaded law is missing part of what is on disk.
+const fn incomplete(kind: policy::IssueKind) -> bool {
+    matches!(
+        kind,
+        policy::IssueKind::LoadFailed | policy::IssueKind::MissingRoot
+    )
 }
 
 #[cfg(test)]
@@ -201,11 +223,11 @@ mod tests {
     #[test]
     fn karen_keeps_the_last_good_law_over_a_broken_save() {
         // A gate file saved mid-edit (invalid JSON) must not un-make the
-        // working law: the reload fails, the old policies stay in force
-        // — and, crucially, she refuses to enforce a PARTIAL law while
-        // the disk is lying. Reloads resume the moment the broken file
-        // is fixed or removed. Proven through dispatch alone: broken
-        // save → standing law still denies → the broken file is fixed
+        // working law: a reload that leaves a file out is refused, the old
+        // policies stay in force — she refuses to enforce a PARTIAL law
+        // while the disk is lying. Reloads resume the moment the broken
+        // file is fixed. Proven through dispatch alone: the standing law's
+        // own file is saved broken → it still denies → the file is fixed
         // and a good gate lands → both laws rule together, no gaps.
         // The Karen who never un-enforces working policy, and never
         // enforces policy she cannot fully read.
@@ -229,8 +251,10 @@ mod tests {
             "standing law must deny before the broken save"
         );
 
-        // The broken save arrives. She declines to swap in a partial law.
-        std::fs::write(root.join("gates").join("broken.json"), "{ not json").expect("broken save");
+        // The broken save arrives, in the standing law's own file. She
+        // declines to swap in the law without it.
+        let standing = root.join("gates").join("standing-law.json");
+        std::fs::write(&standing, "{ not json").expect("broken save");
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(
             matches!(
@@ -240,14 +264,14 @@ mod tests {
             "the broken save must not un-make the standing law"
         );
 
-        // The edit is fixed the way real edits get fixed — the broken
-        // file goes away — and a good gate lands with it. The watcher
+        // The edit is fixed the way real edits get fixed — the file is
+        // saved whole again — and a good gate lands with it. The watcher
         // must still be alive to notice: reloads resume, and both laws
         // rule together, old and new, no gaps between. (Note the
         // needles: the second law's test string must not contain the
         // first law's needle — she reads the whole line, and the test
         // author learned that the hard way, twice.)
-        std::fs::remove_file(root.join("gates").join("broken.json")).expect("remove broken file");
+        std::fs::write(&standing, deny_gate("standing-law", "forbidden")).expect("fixed save");
         std::fs::write(
             root.join("gates").join("second-law.json"),
             deny_gate("second-law", "unpardonable"),

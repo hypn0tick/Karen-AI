@@ -2,7 +2,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::generate;
 use karen::adapters::{AdapterError, RuntimeAdapter};
 use karen::engine::{Engine, maintenance};
-use karen::policy::{self, ActionDef, LoadError, PolicySet};
+use karen::policy::{self, ActionDef, IssueKind, PolicySet};
 use karen::state::{FileStore, MemoryStore, ReadOnlyStore, StateStore};
 use karen::types::{Action, AdapterType, EngineRequest, EngineResponse, Event, InjectionKind};
 use serde_json::{Value, json};
@@ -285,11 +285,14 @@ fn run_hook(
     let set = match policy::load_roots(&roots) {
         Ok(set) => set,
         Err(error) => {
-            // Still fail open, so a broken install never bricks the agent, but
-            // out loud: a guard nobody knows is off duty is worse than none.
+            // Only the built-in layer fails a whole load; a broken user or
+            // project file is reported in the merge notice instead. Still
+            // fail open, so a broken build never bricks the agent, but out
+            // loud: a guard nobody knows is off duty is worse than none.
             tracing::error!(%error, root = %roots.primary().display(), "policy load failed");
             let message = format!(
-                "Karen-AI is not enforcing any policy: {error}. Set KAREN_POLICIES or pass --policies."
+                "Karen-AI is not enforcing any policy: {}. Set KAREN_POLICIES or pass --policies.",
+                one_line(&error.to_string())
             );
             println!("{}", serde_json::json!({ "systemMessage": message }));
             return EXIT_OK;
@@ -327,9 +330,10 @@ fn run_hook(
     EXIT_OK
 }
 
-/// What the merge refused or could not apply, told once per session and again
-/// whenever it changes: the gates still load, but nobody should find out late
-/// that a project tried to switch off a locked one.
+/// What a layer could not load, or the merge refused or could not apply, told
+/// once per session and again whenever it changes: every other gate still
+/// loads, but nobody should find out late that a file is not enforced or that
+/// a project tried to switch off a locked gate.
 fn merge_notice(set: &PolicySet, state: &dyn StateStore, session: &str) -> Option<String> {
     if set.issues.is_empty() {
         return None;
@@ -337,7 +341,7 @@ fn merge_notice(set: &PolicySet, state: &dyn StateStore, session: &str) -> Optio
     let text = set
         .issues
         .iter()
-        .map(|i| format!("the {} layer {}", i.layer, i.message))
+        .map(|i| format!("the {} layer {}", i.layer, one_line(&i.message)))
         .collect::<Vec<_>>()
         .join("; ");
     let key = "karen.merge_issues";
@@ -348,6 +352,17 @@ fn merge_notice(set: &PolicySet, state: &dyn StateStore, session: &str) -> Optio
     Some(format!(
         "Karen-AI policy merge: {text}. Run `karen validate` for details."
     ))
+}
+
+/// `text` on one line: every run of whitespace that spans a line break becomes
+/// one space. A notice is one line of a `systemMessage`, so a bridge can tell a
+/// status line from a gate's warning without parsing the text.
+fn one_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn add_system_message(output: &mut Value, message: &str) {
@@ -406,16 +421,42 @@ fn run_validate(args: ValidateArgs, verbose: bool) -> i32 {
             EXIT_CONFIG,
         );
     }
-    // A change the merge refused (a locked gate, a reused id) is enforced as if
-    // it were absent at hook time; here it is an error to fix.
-    if let Some(issue) = set.issues.iter().find(|i| i.refused) {
-        return fail(
-            &args.out,
-            "POLICY_INVALID",
-            &format!("the {} layer {}", issue.layer, issue.message),
-            "Remove the refused change, or add `\"override\": true` where a replacement is meant.",
-            EXIT_CONFIG,
-        );
+    // At hook time a file that does not load, a missing named root and a
+    // refused change are left out and the rest is enforced; here each is an
+    // error to fix, and every one of them is named.
+    let failing: Vec<&policy::MergeIssue> = set
+        .issues
+        .iter()
+        .filter(|i| i.kind.fails_validation())
+        .collect();
+    let worst = [
+        IssueKind::MissingRoot,
+        IssueKind::LoadFailed,
+        IssueKind::Refused,
+    ]
+    .into_iter()
+    .find(|kind| failing.iter().any(|i| i.kind == *kind));
+    if let Some(kind) = worst {
+        let (code, fix) = match kind {
+            IssueKind::MissingRoot => (
+                "POLICY_NOT_FOUND",
+                "Point --policies at a directory containing config.toml, rules/, and gates/.",
+            ),
+            IssueKind::Refused => (
+                "POLICY_INVALID",
+                "Remove the refused change, or add `\"override\": true` where a replacement is meant.",
+            ),
+            IssueKind::LoadFailed | IssueKind::Warning => (
+                "POLICY_INVALID",
+                "Run `karen validate` after fixing the reported file.",
+            ),
+        };
+        let message = failing
+            .iter()
+            .map(|i| format!("the {} layer {}", i.layer, i.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return fail(&args.out, code, &message, fix, EXIT_CONFIG);
     }
 
     let data = policy_json(&set);
@@ -439,6 +480,14 @@ fn run_validate(args: ValidateArgs, verbose: bool) -> i32 {
         }
     }
     println!("gates: {}  rules: {}", set.gates.len(), set.rules.len());
+    for issue in &set.issues {
+        println!(
+            "{}: the {} layer {}",
+            issue.kind.name(),
+            issue.layer,
+            issue.message
+        );
+    }
     if verbose {
         for gate in &set.gates {
             println!("  - {gate}");
@@ -494,6 +543,12 @@ fn run_evaluate(args: &EvaluateArgs) -> i32 {
         Err(code) => return code,
     };
     let policy_root = set.root.display().to_string();
+    let issues = issues_json(&set);
+    let issue_lines: Vec<String> = set
+        .issues
+        .iter()
+        .map(|i| format!("{}: the {} layer {}", i.kind.name(), i.layer, i.message))
+        .collect();
     // Dry run means dry: she reads real strike state so the preview is honest,
     // but writes nothing, so rehearsing can never eat your only warning.
     // The Karen who lets you practice your apology without filing it.
@@ -515,6 +570,7 @@ fn run_evaluate(args: &EvaluateArgs) -> i32 {
         .iter()
         .map(|id| json!({ "id": id, "layer": layer(id) }))
         .collect();
+    data["issues"] = issues;
     if args.out.wants_json() {
         return print_json(data, &args.out);
     }
@@ -537,6 +593,9 @@ fn run_evaluate(args: &EvaluateArgs) -> i32 {
         println!("fired: {}", fired.join(", "));
     }
     println!("injections: {}", response.injections.len());
+    for line in &issue_lines {
+        println!("{line}");
+    }
     println!();
     println!("Dry run only; session state was not modified.");
     println!("Next: karen check --json --fields gates");
@@ -688,20 +747,25 @@ fn run_schema(args: &SchemaArgs) -> i32 {
     }
 }
 
+/// Every layer in `roots`. A broken user or project file is left out and
+/// reported in the set's issues; only the built-in layer fails the load.
 fn load_policies(roots: &policy::Roots, out: &OutputArgs) -> Result<PolicySet, i32> {
     policy::load_roots(roots).map_err(|error| {
-        let (code, fix) = match &error {
-            LoadError::Root { .. } => (
-                "POLICY_NOT_FOUND",
-                "Point --policies at a directory containing config.toml, rules/, and gates/.",
-            ),
-            _ => (
-                "POLICY_INVALID",
-                "Run `karen validate` after fixing the reported file.",
-            ),
-        };
-        fail(out, code, &error.to_string(), fix, EXIT_CONFIG)
+        fail(
+            out,
+            "POLICY_INVALID",
+            &error.to_string(),
+            "The built-in layer ships inside Karen: report this as a bug.",
+            EXIT_CONFIG,
+        )
     })
+}
+
+fn issues_json(set: &PolicySet) -> Value {
+    set.issues
+        .iter()
+        .map(|i| json!({ "layer": i.layer.name(), "message": i.message, "kind": i.kind.name() }))
+        .collect()
 }
 
 fn policy_json(set: &PolicySet) -> Value {
@@ -738,11 +802,7 @@ fn policy_json(set: &PolicySet) -> Value {
             .iter()
             .map(|c| json!({ "gate": c.gate, "layer": c.layer.name(), "kind": c.kind }))
             .collect::<Vec<_>>(),
-        "issues": set
-            .issues
-            .iter()
-            .map(|i| json!({ "layer": i.layer.name(), "message": i.message, "refused": i.refused }))
-            .collect::<Vec<_>>(),
+        "issues": issues_json(set),
         "rules": set
             .rules
             .iter()
