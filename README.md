@@ -88,7 +88,7 @@ karen setup --project
 karen setup --dry-run
 ```
 
-The `setup` command wires `karen hook` into each runtime where that runtime actually looks. Claude Code reads hooks only from its settings files, so she merges her entries into `settings.json`: everything that isn't hers stays put, an older copy of her entries is replaced rather than duplicated, and a `settings.json` that isn't valid JSON is refused, never overwritten. OpenCode runs no command hooks at all, so she installs a bridge plugin (`plugins/karen-ai.js`) that forwards tool calls and rule injection to the binary, and reviews every idle session as a Stop: when a Stop gate blocks, the reason goes back into the session as a prompt and the turn continues. A child session (one with a parent, from the task tool) is reviewed as a SubagentStop. A lane started in its own terminal is a top-level session, so it gets Stop too; scope gates to roles with conditions such as `cwd`. Each OpenCode Stop also carries the session's todo list (`open_todos`, `todo_count`, `todos_updated`) and `stop_hold_count`, the number of stops Karen has held in a row, reset when one passes: a gate with `none: [{"type": "field_equals", "field": "stop_hold_count", "value": 2}]` insists twice and then lets go, instead of exempting every continuation. The plugin passes the session's directory, and Karen finds the layers from it (`KAREN_POLICIES` in OpenCode's environment still overrides). Codex still gets its `hooks.json`. A stale `hooks.json` from an earlier `setup` is removed from the Claude and OpenCode directories, but only when every command in it is hers. She brought her own ladder, and she put the neighbours' ladders back. You're welcome.
+The `setup` command wires `karen hook` into each runtime where that runtime actually looks. Claude Code reads hooks only from its settings files, so she merges her entries into `settings.json`: everything that isn't hers stays put, an older copy of her entries is replaced rather than duplicated, and a `settings.json` that isn't valid JSON is refused, never overwritten. OpenCode runs no command hooks at all, so she installs a bridge plugin (`plugins/karen-ai.js`) that forwards tool calls and rule injection to the binary, and reviews every idle session as a Stop: when a Stop gate blocks, the reason goes back into the session as a prompt and the turn continues. A child session (one with a parent, from the task tool) is reviewed as a SubagentStop. A lane started in its own terminal is a top-level session, so it gets Stop too; scope gates to roles with conditions such as `cwd`. Each OpenCode Stop also carries the session's todo list (`open_todos`, `todo_count`, `todos_updated`) and `stop_hold_count`, the number of stops Karen has held in a row, reset when one passes: a gate with `none: [{"type": "field_equals", "field": "stop_hold_count", "value": 2}]` insists twice and then lets go, instead of exempting every continuation. The plugin passes the session's directory, and Karen finds the layers from it (`KAREN_POLICIES` in OpenCode's environment still overrides). Codex still gets its `hooks.json`. A global install goes where each runtime reads it, following the runtime's own override: `CLAUDE_CONFIG_DIR` (else `~/.claude`), `CODEX_HOME` (else `~/.codex`), `OPENCODE_CONFIG_DIR` (else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`). Every hook command names its runtime (`--runtime claude`), so a gate on `facts.runtime` holds wherever those directories live. A stale `hooks.json` from an earlier `setup` is removed from the Claude and OpenCode directories, but only when every command in it is hers. She brought her own ladder, and she put the neighbours' ladders back. You're welcome.
 
 ---
 
@@ -153,13 +153,13 @@ She loads three layers on every call and merges them by gate id:
 |---|---|---|
 | Built-in | compiled into the binary | the few gates nobody objects to: no force-push to `main`/`master`, no credentials in a command line |
 | User | `~/.karen/policies` | your rules, in every project and every runtime |
-| Project | `--policies`, else `$KAREN_POLICIES`, else the nearest `.karen/policies` at or above the working directory | one project's rules |
+| Project | `--policies`, else `$KAREN_POLICIES`, else the nearest `.karen/policies` from the working directory up to the repository root, else the repository's `karen.policies` git setting | one project's rules |
 
-The project layer belongs to the repository, so every session in it finds the layer without wiring, whichever worktree it starts in: the nearest `.karen/policies` from the working directory up to the repository root (and, from a directory under your home, never above it), else the repository's `karen.policies` setting (`git config karen.policies <path>`; relative to the main working tree), which every worktree shares. `karen validate` says which way it was found.
+The project layer belongs to the repository, so every session in it finds the layer without wiring, whichever worktree it starts in: the nearest `.karen/policies` from the working directory up to the repository root (outside a repository, up to your home; outside both, in the working directory alone), else the repository's `karen.policies` setting (`git config karen.policies <path>`; relative to the main working tree), which every worktree shares. `karen validate` says which way it was found.
 
-A later layer adds gates freely. To replace a gate from an earlier layer it says so with `"override": true`; reusing an id without it is refused, so nothing is shadowed by accident. To switch one off, its `config.toml` lists `[policy] disable = ["gate-id"]`. A gate marked `"locked": true` survives every later layer: a project that tries to replace or disable it gets refused, the gate stays enforced, and the session is told once. Refusals never fail the load, because a load failure lets everything through. `karen validate` fails on them and reports every gate's layer and source file; `karen evaluate` names the layer of each gate that fired. Config keys merge the same way: a later layer wins per key, lists are unioned. Everything she keeps lives under `~/.karen` (`KAREN_HOME` moves it): `policies/`, `state/`, `cache/`, `logs/`. The Karen who checks the street, the building and the house rules, in that order.
+A later layer adds gates freely. To replace a gate from an earlier layer it says so with `"override": true`; reusing an id without it is refused, so nothing is shadowed by accident. To switch one off, its `config.toml` lists `[policy] disable = ["gate-id"]`. A gate marked `"locked": true` survives every later layer: a project that tries to replace or disable it gets refused, the gate stays enforced, and the session is told once. Refusals never fail the load, and neither does a broken file: a gate file that does not parse, a gate whose pattern does not compile, a config section with a typo or a rule with bad front matter is left out alone and named, and every other gate stays enforced. `karen validate` fails on all of them and reports every gate's layer and source file; `karen evaluate` names the layer of each gate that fired. Config keys merge the same way: a later layer wins per key, lists are unioned. Everything she keeps lives under `~/.karen` (`KAREN_HOME` moves it): `policies/`, `state/`, `cache/`, `logs/`, and `run/`, where the OpenCode bridge hands her each payload as an owner-only file, removed once she answers. The Karen who checks the street, the building and the house rules, in that order.
 
-If an explicitly named project root does not exist, `karen hook` still lets the call through, so a broken install never bricks your agent, but it says so: the response carries a `systemMessage` saying no policy is enforced and why. The OpenCode plugin passes that on once per session, in the first tool result or, for a session that only idles, as a prompt. A guard who is off duty tells you she is off duty. When the OpenCode plugin itself cannot reach her (the binary fails to start, times out or exits non-zero, a session read fails, or a hold prompt is not delivered), it still lets the session through and writes one line per failure to `$KAREN_LOG`, by default `~/.karen/logs/karen-opencode.log`, so a stop that was not held can be explained from the log.
+If an explicitly named project root does not exist, or a file in a layer does not load, `karen hook` still enforces every layer and file that did load, so a broken install never bricks your agent and never switches the rest off, but it says so: the response carries a `systemMessage` (`Karen-AI policy merge: …`) naming what is missing, once per session and again whenever it changes. The OpenCode plugin passes that on in the first tool result or, for a session that only idles, as a prompt; a gate's warning on a stop it allowed never wakes a session. A guard who is off duty tells you she is off duty. When the OpenCode plugin itself cannot reach her (the binary fails to start, times out or exits non-zero, a session read fails, or a hold prompt is not delivered), it still lets the session through and writes one line per failure to `$KAREN_LOG`, by default `~/.karen/logs/karen-opencode.log`, so a stop that was not held can be explained from the log.
 
 ---
 
@@ -176,8 +176,8 @@ If an explicitly named project root does not exist, `karen hook` still lets the 
 
   "match": {
     "all": [
-      { "type": "command_regex", "pattern": "git\\s+push\\b.*(--force|-f)\\b" },
-      { "type": "command_regex", "pattern": "\\b(main|master)\\b" }
+      { "type": "command_regex", "pattern": "\\bgit(?:\\s+-{1,2}[^\\s=]+(?:=\\S*|\\s+[^-\\s]\\S*)?)*\\s+push\\b[^;&|\\n]*\\s(?:-[a-zA-Z]*f[a-zA-Z]*\\b|--force\\b|--mirror\\b|[\"']?\\+[^\\s+])" },
+      { "type": "command_regex", "pattern": "\\bgit(?:\\s+-{1,2}[^\\s=]+(?:=\\S*|\\s+[^-\\s]\\S*)?)*\\s+push\\b[^;&|\\n]*\\s(?:[\"']?\\+?(?:[^\\s:\"';&|]*:)?(?:refs/heads/)?(?:main|master)[\"']?(?:[\\s;&|)]|$)|--mirror\\b|--all\\b)" }
     ]
   },
 
@@ -187,6 +187,8 @@ If an explicitly named project root does not exist, `karen hook` still lets the 
   }
 }
 ```
+
+`tool` is an exact tool name, matched case-insensitively, or a regex over it (`"Edit|Write"`). It must compile as a regex either way: `karen validate` refuses a filter that does not, because a typo there leaves a gate that silently never applies.
 
 The Karen who decides. Four answers: `allow`, `deny`, `ask`, `modify`. No `maybe`. A `maybe` was proposed at a design review. She asked for the manager. It did not survive. The Karen who buried `maybe` in the backyard. The manager attended the funeral.
 
@@ -213,8 +215,8 @@ A gate can read what the session's runtime actually has instead of someone remem
 
 | Fact | Value | Source |
 |------|-------|--------|
-| `facts.runtime` | `claude`, `codex`, `opencode` or `unknown` | the OpenCode plugin says so; otherwise the transcript path |
-| `facts.mcp_servers` | comma-separated names of the enabled MCP servers | the runtime's own config files (Claude Code: `~/.claude.json`, the project's `.mcp.json`, enabled plugins; Codex: `~/.codex/config.toml`; OpenCode: its global, project and `OPENCODE_CONFIG` files). Names only: server definitions can hold keys, and a gate never needs them |
+| `facts.runtime` | `claude`, `codex`, `opencode` or `unknown` | the hook command (`karen setup` writes `--runtime claude` or `--runtime codex` into every one); the OpenCode plugin says so in the payload; otherwise the transcript path, under `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when they are set |
+| `facts.mcp_servers` | comma-separated names of the enabled MCP servers | the runtime's own config files (Claude Code: `.claude.json` in `CLAUDE_CONFIG_DIR`, else `~/.claude.json`, the project's `.mcp.json`, and the plugins its settings enable; Codex: `config.toml` in `CODEX_HOME`, else `~/.codex`; OpenCode: `opencode.json` or `opencode.jsonc` in its global directory (`$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`), the project, `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR`). Names only: server definitions can hold keys, and a gate never needs them |
 | `facts.tools` | comma-separated names from `[facts] tools` found on `PATH` | `PATH` |
 | `facts.git_uncommitted` | `git status --porcelain` for `cwd`, first 50 lines | git |
 
@@ -431,7 +433,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-151 tests passing (14 unit, 17 integration, 120 e2e — zero ignored). The Karen
+203 tests passing (27 unit, 20 integration, 156 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
