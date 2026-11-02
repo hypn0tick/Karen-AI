@@ -91,7 +91,6 @@ The Karen who checks your boxes, then adds three more.
 
 - [ ] `cargo fmt --check` passes
 - [ ] `cargo clippy --all-targets -- -D warnings` passes (zero warnings)
-- [ ] `cargo build --release` ran (e2e and integration tests exec this binary)
 - [ ] `cargo test` passes (all 203 tests: 27 unit + 20 integration + 156 e2e, zero ignored)
 - [ ] New code has doc comments with Karen voice
 - [ ] Commit messages follow conventions (no AI attribution)
@@ -124,8 +123,7 @@ policies/                # Yours — local-only, not in this repo (the author's 
 # Full suite (what CI runs)
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo build --release        # e2e and integration tests exec this binary
-cargo test                   # unit + integration + e2e
+cargo test                   # unit + integration + e2e; builds the binary they exec
 
 # E2E lane only
 cargo test --test test_e2e

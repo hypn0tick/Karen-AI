@@ -427,8 +427,7 @@ The Karen who documents herself.
 ## Testing
 
 ```bash
-cargo build --release        # e2e and integration tests exec this binary
-cargo test                  # unit + integration + e2e tests
+cargo test                  # unit + integration + e2e tests; builds the binary they exec
 cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```

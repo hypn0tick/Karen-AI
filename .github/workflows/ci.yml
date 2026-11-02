@@ -40,9 +40,6 @@ jobs:
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Build release (e2e and integration tests exec this binary)
-        run: cargo build --release
-
       - name: Run tests
         run: cargo test --all
 

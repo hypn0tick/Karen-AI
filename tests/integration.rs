@@ -1,14 +1,12 @@
 use std::io::Write;
 use std::process::Command;
 
+/// The `karen` binary Cargo built for this test run, from the same sources and
+/// profile as the tests. A copy left in `target/release` by an earlier build
+/// may be stale or missing, and testing it proves nothing about the code under
+/// test.
 fn binary() -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let binary_name = if cfg!(windows) { "karen.exe" } else { "karen" };
-    let path = std::path::Path::new(manifest_dir)
-        .join("target")
-        .join("release")
-        .join(binary_name);
-    path.to_string_lossy().to_string()
+    env!("CARGO_BIN_EXE_karen").to_string()
 }
 
 // The Karen who brings her own evidence to every interview: each test gets

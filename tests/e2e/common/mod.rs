@@ -14,14 +14,12 @@ pub use fixtures::GateFixture;
 pub use fixtures::TestEnv;
 pub use runtime::runtime_available;
 
-/// Helper to get the path to the karen binary (release build)
+/// The `karen` binary Cargo built for this test run, from the same sources and
+/// profile as the tests. The Karen who only signs off on the copy she watched
+/// being made: one left in `target/release` by an earlier build may be stale
+/// or missing.
 pub fn karen_binary_path() -> std::path::PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let binary_name = if cfg!(windows) { "karen.exe" } else { "karen" };
-    std::path::Path::new(&manifest_dir)
-        .join("target")
-        .join("release")
-        .join(binary_name)
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_karen"))
 }
 
 /// Run a command and capture stdout, stderr, and exit code
