@@ -269,8 +269,18 @@ fn karen_setup_hooks_use_karen_binary_from_path() {
     let env = TestEnv::new();
     let project_dir = env.temp_dir.path().join("project");
     fs::create_dir_all(&project_dir).unwrap();
-    let (code, _, _) = env
+    // A PATH whose only entry holds a karen binary, so the bare name resolves.
+    let path_dir = env.temp_dir.path().join("path-bin");
+    fs::create_dir_all(&path_dir).unwrap();
+    fs::copy(
+        &env.karen_binary,
+        path_dir.join(env.karen_binary.file_name().unwrap()),
+    )
+    .unwrap();
+    let (code, stdout, _) = env
         .karen_cmd(&["setup", "--project", "claude"])
+        .env("PATH", &path_dir)
+        .env_remove("KAREN_HOME")
         .current_dir(&project_dir)
         .output()
         .map(|o| {
@@ -282,6 +292,10 @@ fn karen_setup_hooks_use_karen_binary_from_path() {
         })
         .unwrap();
     assert_exit_code(code, 0);
+    assert!(
+        stdout.contains("Hooks use the karen binary from PATH"),
+        "{stdout}"
+    );
     let hooks_path = project_dir.join(".claude").join("settings.json");
     assert!(
         hooks_path.exists(),
@@ -514,6 +528,53 @@ fn karen_setup_removes_only_her_own_legacy_hooks_json() {
 
 #[test]
 #[serial]
+fn karen_setup_without_karen_on_path_falls_back_to_her_default_home_binary() {
+    let env = TestEnv::new();
+    let project = env.temp_dir.path().join("no-path");
+    fs::create_dir_all(&project).unwrap();
+    let empty = env.temp_dir.path().join("empty-path");
+    fs::create_dir_all(&empty).unwrap();
+    for runtime in ["claude", "opencode"] {
+        let out = env
+            .karen_cmd(&["setup", "--project", runtime])
+            .env("PATH", &empty)
+            .env_remove("KAREN_HOME")
+            .current_dir(&project)
+            .output()
+            .unwrap();
+        assert_exit_code(out.status.code().unwrap_or(-1), 0);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("karen is not on PATH"), "{stdout}");
+    }
+    // The default home binary is named even though it is not installed yet.
+    let default = env
+        .home_dir
+        .join(".karen")
+        .join("bin")
+        .join(env.karen_binary.file_name().unwrap())
+        .display()
+        .to_string()
+        .replace('\\', "/");
+    let settings = fs::read_to_string(project.join(".claude").join("settings.json")).unwrap();
+    assert!(
+        settings.contains(&format!("\\\"{default}\\\" hook --adapter claude-classic")),
+        "{settings}"
+    );
+    let plugin = fs::read_to_string(
+        project
+            .join(".opencode")
+            .join("plugins")
+            .join("karen-ai.js"),
+    )
+    .unwrap();
+    assert!(
+        plugin.contains(&format!("process.env.KAREN_BIN || \"{default}\"")),
+        "{plugin}"
+    );
+}
+
+#[test]
+#[serial]
 fn karen_installed_in_her_home_pins_her_own_path_in_hooks() {
     let env = TestEnv::new();
     let bin = env.home_dir.join(".karen").join("bin");
@@ -523,6 +584,11 @@ fn karen_installed_in_her_home_pins_her_own_path_in_hooks() {
     let project = env.temp_dir.path().join("pinned");
     fs::create_dir_all(&project).unwrap();
 
+    let shown = fs::canonicalize(&installed).unwrap().display().to_string();
+    let shown = shown
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&shown)
+        .replace('\\', "/");
     for runtime in ["claude", "opencode"] {
         let out = std::process::Command::new(&installed)
             .env("HOME", &env.home_dir)
@@ -532,12 +598,11 @@ fn karen_installed_in_her_home_pins_her_own_path_in_hooks() {
             .output()
             .unwrap();
         assert_exit_code(out.status.code().unwrap_or(-1), 0);
+        // The closing note names the pinned binary and never sends a home install to PATH.
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains(&format!("Hooks call {shown}")), "{stdout}");
+        assert!(!stdout.contains("from PATH"), "{stdout}");
     }
-    let shown = fs::canonicalize(&installed).unwrap().display().to_string();
-    let shown = shown
-        .strip_prefix(r"\\?\")
-        .unwrap_or(&shown)
-        .replace('\\', "/");
     let settings = fs::read_to_string(project.join(".claude").join("settings.json")).unwrap();
     assert!(
         settings.contains(&format!("\\\"{shown}\\\" hook --adapter claude-classic")),

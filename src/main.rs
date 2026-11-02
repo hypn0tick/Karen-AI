@@ -1363,9 +1363,19 @@ fn report_setup(actions: &[SetupAction], out: &OutputArgs) -> i32 {
         println!(
             "  Test:   karen evaluate --event PreToolUse --tool Bash --command 'git commit -m x'"
         );
-        println!(
-            "\nNote: Hooks use the karen binary from PATH. Install karen first (cargo install karen-ai)."
-        );
+        // The note names the binary the hooks were just written to call, so it never tells a
+        // home install (whose hooks carry her pinned path) to go and put karen on PATH.
+        match pinned_binary() {
+            Some(path) if Path::new(&path).is_file() => {
+                println!("\nNote: Hooks call {path}; replacing that file upgrades every hook.");
+            }
+            Some(path) => println!(
+                "\nNote: karen is not on PATH, so the hooks call {path}, Karen's default home binary. Install karen there, or put it on PATH and run setup again."
+            ),
+            None => println!(
+                "\nNote: Hooks use the karen binary from PATH. Install karen first (cargo install karen-ai)."
+            ),
+        }
     }
     EXIT_OK
 }
@@ -1692,26 +1702,45 @@ export const KarenAI = async ({ directory, client }) => {
 };
 "#;
 
-/// The binary a hook command names. Installed in her home (`<Karen home>/bin`),
-/// she pins her own path, so a hook never depends on PATH; anywhere else (a
-/// build directory, a package manager's bin) she writes the bare name.
+/// The bare binary name a hook runs from PATH.
+const BARE_BINARY: &str = if cfg!(windows) { "karen.exe" } else { "karen" };
+
+/// The absolute binary a hook command names, or `None` when hooks run the bare
+/// name from PATH. Installed in her home (`<Karen home>/bin`), she pins her own
+/// path, so a hook never depends on PATH. Run from anywhere else (a build
+/// directory, a package manager's bin) she writes the bare name when PATH
+/// resolves it, and otherwise falls back to her home's default binary, so a hook
+/// never names a command its shell cannot find.
 fn pinned_binary() -> Option<String> {
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let home = karen::home::karen_home().join("bin").canonicalize().ok()?;
-    if !exe.starts_with(&home) {
+    let home_bin = karen::home::karen_home().join("bin");
+    let exe = std::env::current_exe().and_then(std::fs::canonicalize);
+    if let (Ok(exe), Ok(home)) = (exe, std::fs::canonicalize(&home_bin))
+        && exe.starts_with(&home)
+    {
+        return Some(shown_path(&exe));
+    }
+    if on_path(BARE_BINARY) {
         return None;
     }
-    let shown = exe.display().to_string();
+    Some(shown_path(&home_bin.join(BARE_BINARY)))
+}
+
+/// A path as a hook command shows it: no verbatim prefix, forward slashes.
+fn shown_path(path: &Path) -> String {
+    let shown = path.display().to_string();
     let shown = shown.strip_prefix(r"\\?\").unwrap_or(&shown);
-    Some(shown.replace('\\', "/"))
+    shown.replace('\\', "/")
+}
+
+/// Whether a file named `name` sits in a directory on PATH (an unset PATH holds none).
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
 }
 
 /// A hook command's binary, as it sits inside a JSON string.
 fn hook_binary() -> String {
-    pinned_binary().map_or_else(
-        || (if cfg!(windows) { "karen.exe" } else { "karen" }).to_string(),
-        |path| format!("\\\"{path}\\\""),
-    )
+    pinned_binary().map_or_else(|| BARE_BINARY.to_string(), |path| format!("\\\"{path}\\\""))
 }
 
 fn claude_hooks_json() -> String {
