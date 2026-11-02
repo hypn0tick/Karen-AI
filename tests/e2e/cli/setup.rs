@@ -647,7 +647,7 @@ fn karen_setup_hook_commands_name_their_runtime() {
                 }
             }
         }
-        assert!(!commands.is_empty());
+        assert_ne!(commands, Vec::<String>::new());
         for command in commands {
             assert!(
                 command.contains(&format!("--runtime {runtime}")),

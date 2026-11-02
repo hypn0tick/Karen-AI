@@ -38,7 +38,7 @@ fn karen_validates_quiet_suppresses_output() {
     let env = TestEnv::new();
     let (code, stdout, _stderr) = env.run_karen(&["validate", "--quiet"]);
     assert_exit_code(code, 0);
-    assert!(stdout.trim().is_empty(), "quiet should produce no stdout");
+    assert_eq!(stdout.trim(), "", "quiet should produce no stdout");
 }
 
 #[test]

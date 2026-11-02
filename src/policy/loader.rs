@@ -1128,7 +1128,7 @@ mod tests {
     fn rule_front_matter_handles_empty_crlf_and_unclosed_blocks() {
         let p = Path::new("r.md");
         let (r, body) = rule_front_matter(p, "---\n---\n# body\n").unwrap();
-        assert!(r.is_empty());
+        assert_eq!(r, Vec::<String>::new());
         assert_eq!(body, "# body\n");
         let (r, body) =
             rule_front_matter(p, "---\r\nruntimes: [claude]\r\n---\r\n# hi\r\n").unwrap();
@@ -1139,7 +1139,7 @@ mod tests {
             .to_string();
         assert!(err.contains("no closing"), "{err}");
         let (r, body) = rule_front_matter(p, "# plain\n").unwrap();
-        assert!(r.is_empty());
+        assert_eq!(r, Vec::<String>::new());
         assert_eq!(body, "# plain\n");
     }
 
