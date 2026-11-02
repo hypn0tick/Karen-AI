@@ -1441,4 +1441,154 @@ mod tests {
         // directory itself is hers to read.
         assert_eq!(walk_floor(start, None, None), start);
     }
+
+    fn bash(command: &str) -> crate::types::EngineRequest {
+        crate::types::EngineRequest {
+            event: crate::types::Event::PreToolUse,
+            session_id: "builtin".into(),
+            agent_id: None,
+            cwd: None,
+            tool_name: Some("Bash".into()),
+            tool_input: Some(serde_json::json!({ "command": command })),
+            tool_response: None,
+            prompt: None,
+            user_message: None,
+            metadata: crate::types::RequestMetadata::default(),
+            part: None,
+            raw: serde_json::json!({}),
+        }
+    }
+
+    fn matches(gates: &[Gate], command: &str) -> bool {
+        gates[0].matcher.matches(&bash(command))
+    }
+
+    /// Every shipped copy of a gate: the built-in one and the example.
+    fn copies(builtin: &str, example: &str) -> Vec<Vec<Gate>> {
+        let path = format!("{}/examples/gates/{example}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(path).expect("example gate");
+        let parsed: GateFile = json5::from_str(&text).expect("example parses");
+        let example: Vec<Gate> = gate_defs(parsed)
+            .into_iter()
+            .map(|def| Gate::compile(def).expect("compiles"))
+            .collect();
+        let shipped: Vec<Gate> = builtin_layer()
+            .expect("built-in")
+            .gates
+            .into_iter()
+            .filter(|g| g.id == builtin)
+            .collect();
+        vec![shipped, example]
+    }
+
+    #[test]
+    fn the_force_push_gate_sees_every_spelling_of_a_force_push_to_main() {
+        // Commands are assembled at run time so this file never carries one
+        // a gate on this machine would refuse to let an agent write.
+        let push = ["git", "push"].join(" ");
+        for gates in copies(
+            "karen-no-force-push-default-branch",
+            "no-force-push-to-main.json",
+        ) {
+            for tail in [
+                "-f origin main",
+                "--force origin master",
+                "origin main --force",
+                "--force-with-lease origin main",
+                "--force-with-lease=main:abc origin main",
+                "-fu origin main",
+                "origin +main",
+                "origin +HEAD:main",
+                "origin '+main'",
+                "origin HEAD:refs/heads/main -f",
+                "--mirror -f origin",
+                "--all --force origin",
+            ] {
+                let command = format!("{push} {tail}");
+                assert!(matches(&gates, &command), "must deny: {command}");
+            }
+            let git = "git";
+            for command in [
+                format!("{git} -C ../repo push -f origin main"),
+                format!("{git} -c push.default=current push --force origin main"),
+                format!("{git} --no-pager push -f origin master"),
+                format!("/usr/bin/{push} -f origin main"),
+                format!("cd repo && {push} -f origin main"),
+            ] {
+                assert!(matches(&gates, &command), "must deny: {command}");
+            }
+            for command in [
+                format!("{push} origin main"),
+                format!("{push} -f origin feature/main-menu"),
+                format!("{push} --force origin maintenance"),
+                format!("{push} --force origin my-main"),
+                format!("{push} --follow-tags origin main"),
+                format!("{push} -u origin main"),
+                format!("{git} pull --force origin main"),
+                format!("le{push} -f origin main"),
+                format!("{push} origin main && rm -f stale.lock"),
+            ] {
+                assert!(!matches(&gates, &command), "must allow: {command}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_secrets_gate_sees_current_credential_formats() {
+        // Tokens are assembled at run time so this file never holds one a
+        // secret scanner would flag.
+        let token = |prefix: &str, body: &str| format!("{prefix}{body}");
+        let a36 = "abcdefghijklmnopqrstuvwxyz0123456789";
+        for gates in copies(
+            "karen-no-secrets-in-commands",
+            "no-secrets-in-commands.json",
+        ) {
+            for command in [
+                format!(
+                    "aws configure set key {}",
+                    token("AKIA", "IOSFODNN7EXAMPLE")
+                ),
+                format!("export KEY={}", token("ASIA", "IOSFODNN7EXAMPLE")),
+                format!(
+                    "curl -H 'Bearer {}'",
+                    token("sk-", "abcdefghijklmnopqrstuvwx")
+                ),
+                format!(
+                    "KEY={} node app.js",
+                    token("sk-proj-", "AbCdEfGhIjKl_QrStUv-1234")
+                ),
+                format!(
+                    "KEY={} node app.js",
+                    token("sk-ant-api03-", "AbCdEfGhIjKlMnOpQrSt")
+                ),
+                format!("git clone https://{}@github.com/o/r", token("ghp_", a36)),
+                format!("gh auth login --with-token {}", token("gho_", a36)),
+                format!(
+                    "git clone https://{}@github.com/o/r",
+                    token("github_pat_", "11ABCDEFG0123456789_abcdefghijklm")
+                ),
+                format!("curl -d token={}", token("xoxb-", "1234567890-abcdefghij")),
+                format!("echo '{}'", token("-----BEGIN RSA PRIVATE", " KEY-----")),
+                format!("echo '{}'", token("-----BEGIN PRIVATE", " KEY-----")),
+                format!(
+                    "echo '{}'",
+                    token("-----BEGIN ENCRYPTED PRIVATE", " KEY-----")
+                ),
+                format!("echo '{}'", token("-----BEGIN DSA PRIVATE", " KEY-----")),
+            ] {
+                assert!(matches(&gates, &command), "must deny: {command}");
+            }
+            for command in [
+                format!(
+                    "cargo test -- --ta{}",
+                    token("sk-", "0123456789abcdef0123456789abcdef")
+                ),
+                format!("rm -rf /tmp/di{}", token("sk-", "0123456789abcdefghijklmn")),
+                "echo '-----BEGIN PUBLIC KEY-----'".to_string(),
+                "git log --oneline".to_string(),
+            ] {
+                assert!(!matches(&gates, &command), "must allow: {command}");
+            }
+        }
+    }
 }

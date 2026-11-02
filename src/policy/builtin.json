@@ -12,8 +12,8 @@
       "tags": ["git", "safety", "builtin"],
       "match": {
         "all": [
-          { "type": "command_regex", "pattern": "git\\s+push\\b.*(-f\\b|--force\\b|--force-with-lease\\b)" },
-          { "type": "command_regex", "pattern": "\\b(main|master)\\b" }
+          { "type": "command_regex", "pattern": "\\bgit(?:\\s+-{1,2}[^\\s=]+(?:=\\S*|\\s+[^-\\s]\\S*)?)*\\s+push\\b[^;&|\\n]*\\s(?:-[a-zA-Z]*f[a-zA-Z]*\\b|--force\\b|--mirror\\b|[\"']?\\+[^\\s+])" },
+          { "type": "command_regex", "pattern": "\\bgit(?:\\s+-{1,2}[^\\s=]+(?:=\\S*|\\s+[^-\\s]\\S*)?)*\\s+push\\b[^;&|\\n]*\\s(?:[\"']?\\+?(?:[^\\s:\"';&|]*:)?(?:refs/heads/)?(?:main|master)[\"']?(?:[\\s;&|)]|$)|--mirror\\b|--all\\b)" }
         ]
       },
       "action": {
@@ -30,7 +30,7 @@
       "tags": ["security", "secrets", "builtin"],
       "match": {
         "all": [
-          { "type": "command_regex", "pattern": "AKIA[0-9A-Z]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|xox[baprs]-[0-9a-zA-Z-]{10,}|-----BEGIN\\s+(RSA\\s+|EC\\s+|OPENSSH\\s+)?PRIVATE KEY-----" }
+          { "type": "command_regex", "pattern": "(?:AKIA|ASIA)[0-9A-Z]{16}|(?:^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}|xox[baprs]-[0-9A-Za-z-]{10,}|-----BEGIN\\s+(?:[A-Z0-9]+\\s+)*PRIVATE KEY-----" }
         ]
       },
       "action": {

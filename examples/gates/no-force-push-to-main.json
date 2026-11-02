@@ -15,8 +15,8 @@
     "all": [
       // Both conditions must match the same command string — she reads
       // the whole line, not just the exciting parts.
-      { "type": "command_regex", "pattern": "git\\s+push\\b.*(-f\\b|--force\\b)" },
-      { "type": "command_regex", "pattern": "\\b(main|master)\\b" }
+      { "type": "command_regex", "pattern": "\\bgit(?:\\s+-{1,2}[^\\s=]+(?:=\\S*|\\s+[^-\\s]\\S*)?)*\\s+push\\b[^;&|\\n]*\\s(?:-[a-zA-Z]*f[a-zA-Z]*\\b|--force\\b|--mirror\\b|[\"']?\\+[^\\s+])" },
+      { "type": "command_regex", "pattern": "\\bgit(?:\\s+-{1,2}[^\\s=]+(?:=\\S*|\\s+[^-\\s]\\S*)?)*\\s+push\\b[^;&|\\n]*\\s(?:[\"']?\\+?(?:[^\\s:\"';&|]*:)?(?:refs/heads/)?(?:main|master)[\"']?(?:[\\s;&|)]|$)|--mirror\\b|--all\\b)" }
     ]
   },
 
