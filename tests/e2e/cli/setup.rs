@@ -555,3 +555,83 @@ fn karen_installed_in_her_home_pins_her_own_path_in_hooks() {
         "{plugin}"
     );
 }
+
+#[test]
+#[serial]
+fn karen_setup_hook_commands_name_their_runtime() {
+    // The runtime is a fact only the caller knows for sure; a transcript path
+    // is a guess that breaks when the runtime's directory moves.
+    for (runtime, file) in [("claude", "settings.json"), ("codex", "hooks.json")] {
+        let env = TestEnv::new();
+        let project_dir = env.temp_dir.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        let mut cmd = env.karen_cmd(&["setup", "--project", runtime, "--json"]);
+        cmd.current_dir(&project_dir);
+        let (code, stdout, _stderr) = crate::e2e::common::run_command(cmd);
+        assert_exit_code(code, 0);
+        let data = assert_json_ok(&stdout);
+        let path = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+        assert!(path.ends_with(file), "{}", path.display());
+        let hooks: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let mut commands = Vec::new();
+        for entries in hooks["hooks"].as_object().unwrap().values() {
+            for entry in entries.as_array().unwrap() {
+                for hook in entry["hooks"].as_array().unwrap() {
+                    commands.push(hook["command"].as_str().unwrap().to_string());
+                }
+            }
+        }
+        assert!(!commands.is_empty());
+        for command in commands {
+            assert!(
+                command.contains(&format!("--runtime {runtime}")),
+                "{runtime}: {command}"
+            );
+        }
+    }
+}
+
+#[test]
+#[serial]
+fn karen_setup_follows_each_runtimes_own_config_directory() {
+    // `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `OPENCODE_CONFIG_DIR` move where
+    // each runtime reads its hooks; a global install written to the default
+    // directory would be read by nobody.
+    let env = TestEnv::new();
+    let claude = env.temp_dir.path().join("claude-cfg");
+    let codex = env.temp_dir.path().join("codex-cfg");
+    let opencode = env.temp_dir.path().join("opencode-cfg");
+    let mut cmd = env.karen_cmd(&["setup", "--dry-run", "--json"]);
+    cmd.env("CLAUDE_CONFIG_DIR", &claude)
+        .env("CODEX_HOME", &codex)
+        .env("OPENCODE_CONFIG_DIR", &opencode);
+    let (code, stdout, _stderr) = crate::e2e::common::run_command(cmd);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    for action in data["actions"].as_array().unwrap() {
+        let path = std::path::PathBuf::from(action["path"].as_str().unwrap());
+        let expected = match action["runtime"].as_str().unwrap() {
+            "claude" => &claude,
+            "codex" => &codex,
+            "opencode" => &opencode,
+            other => panic!("unexpected runtime {other}"),
+        };
+        assert!(path.starts_with(expected), "{action}");
+    }
+}
+
+#[test]
+#[serial]
+fn karen_setup_installs_under_the_home_she_was_given() {
+    // Without an override, a global install lands in the home every other
+    // Karen path resolves against (`HOME`, then `USERPROFILE`).
+    let env = TestEnv::new();
+    let (code, stdout, _stderr) = env.run_karen(&["setup", "--dry-run", "--json"]);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    for action in data["actions"].as_array().unwrap() {
+        let path = std::path::PathBuf::from(action["path"].as_str().unwrap());
+        assert!(path.starts_with(&env.home_dir), "{action}");
+    }
+}

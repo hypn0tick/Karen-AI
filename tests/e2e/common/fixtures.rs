@@ -388,6 +388,12 @@ impl TestEnv {
         let mut cmd = Command::new(&self.karen_binary);
         cmd.env("HOME", &self.home_dir)
             .env("KAREN_POLICIES", &self.policies_dir)
+            // The runtimes' own directory overrides of whoever runs the suite
+            // never reach the binary under test.
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
+            .env_remove("OPENCODE_CONFIG_DIR")
+            .env_remove("XDG_CONFIG_HOME")
             // Don't set KAREN_DEV for hook tests - fail-open should return {}
             .args(args);
         cmd
@@ -398,6 +404,10 @@ impl TestEnv {
         let mut cmd = Command::new(&self.karen_binary);
         cmd.env("HOME", &self.home_dir)
             .env("KAREN_POLICIES", &self.policies_dir)
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
+            .env_remove("OPENCODE_CONFIG_DIR")
+            .env_remove("XDG_CONFIG_HOME")
             .env("KAREN_DEV", "1")
             .args(args);
         cmd

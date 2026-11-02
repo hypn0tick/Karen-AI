@@ -62,6 +62,9 @@ enum Command {
         /// Read the hook payload from this file instead of stdin. For a caller whose runtime cannot hand a child a reliable stdin: the `OpenCode` bridge writes the payload to a file and gives her no stdin at all.
         #[arg(long)]
         input: Option<PathBuf>,
+        /// The runtime that runs this hook (`claude`, `codex`, `opencode`), as the `runtime` fact. `karen setup` writes it into every hook command; a `facts.runtime` in the payload still wins. Without either she reads it from the transcript path.
+        #[arg(long)]
+        runtime: Option<String>,
     },
     /// Validate policy files and print a summary. The Karen who checks first, because "it looked fine" is not a validation result — and she'll be quoting you on it.
     Validate(ValidateArgs),
@@ -112,6 +115,9 @@ struct EvaluateArgs {
     session: String,
     #[arg(long)]
     cwd: Option<String>,
+    /// The runtime to rehearse as (`claude`, `codex`, `opencode`), as `karen hook --runtime` does.
+    #[arg(long)]
+    runtime: Option<String>,
     /// Include the full injected text in JSON output. The Karen who shows you the whole document, under protest, and points at the parts you clearly didn't read.
     #[arg(long)]
     include_content: bool,
@@ -144,13 +150,13 @@ struct SetupArgs {
 
 #[derive(ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]
 enum SetupRuntime {
-    /// Install for Claude Code (global: ~/.claude/, project: .claude/). The Karen who speaks Classic and has the receipts.
+    /// Install for Claude Code (global: `CLAUDE_CONFIG_DIR`, else `~/.claude/`; project: .claude/). The Karen who speaks Classic and has the receipts.
     #[clap(name = "claude")]
     Claude,
-    /// Install for Codex (global: ~/.codex/, project: .codex/). The Karen who codes, because she's reviewed every PR and knows where the bodies are buried.
+    /// Install for Codex (global: `CODEX_HOME`, else `~/.codex/`; project: .codex/). The Karen who codes, because she's reviewed every PR and knows where the bodies are buried.
     #[clap(name = "codex")]
     Codex,
-    /// Install for `OpenCode` (global: ~/.config/opencode/, project: .opencode/). The Karen who opens, because closed doors don't stop her from finding the mess.
+    /// Install for `OpenCode` (global: `OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode/`, else `~/.config/opencode/`; project: .opencode/). The Karen who opens, because closed doors don't stop her from finding the mess.
     #[clap(name = "opencode")]
     OpenCode,
 }
@@ -202,7 +208,14 @@ fn main() {
             policies,
             part,
             input,
-        } => run_hook(adapter, policies, part, input.as_deref()),
+            runtime,
+        } => run_hook(
+            adapter,
+            policies,
+            part,
+            input.as_deref(),
+            runtime.as_deref(),
+        ),
         Command::Validate(args) => run_validate(args, false),
         Command::Check(args) => run_validate(args, true),
         Command::Evaluate(args) => run_evaluate(&args),
@@ -251,6 +264,7 @@ fn run_hook(
     policies: Option<PathBuf>,
     part: Option<usize>,
     input: Option<&std::path::Path>,
+    runtime: Option<&str>,
 ) -> i32 {
     let dev = std::env::var_os("KAREN_DEV").is_some();
 
@@ -269,11 +283,12 @@ fn run_hook(
         },
         None => first_value(&mut std::io::BufReader::new(std::io::stdin().lock())),
     };
-    let raw: Value = match parsed {
+    let mut raw: Value = match parsed {
         Some(Ok(value)) => value,
         Some(Err(error)) => fail_open(&format!("invalid JSON input: {error}"), dev),
         None => fail_open("invalid JSON input: empty input", dev),
     };
+    name_runtime(&mut raw, runtime);
 
     let mut request = match normalize(adapter, raw) {
         Ok(request) => request,
@@ -363,6 +378,22 @@ fn one_line(text: &str) -> String {
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// `runtime` as the payload's `facts.runtime`, unless the payload already
+/// names one: a bridge that says where it runs knows best.
+fn name_runtime(raw: &mut Value, runtime: Option<&str>) {
+    let (Some(runtime), Some(object)) = (runtime, raw.as_object_mut()) else {
+        return;
+    };
+    let facts = object
+        .entry("facts")
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if let Some(facts) = facts.as_object_mut() {
+        facts
+            .entry("runtime")
+            .or_insert_with(|| Value::from(runtime));
+    }
 }
 
 fn add_system_message(output: &mut Value, message: &str) {
@@ -516,10 +547,11 @@ fn run_evaluate(args: &EvaluateArgs) -> i32 {
         );
     }
 
-    let raw = match build_raw(args, &args.out) {
+    let mut raw = match build_raw(args, &args.out) {
         Ok(raw) => raw,
         Err(code) => return code,
     };
+    name_runtime(&mut raw, args.runtime.as_deref());
 
     let mut request = match normalize(args.adapter, raw) {
         Ok(request) => request,
@@ -976,6 +1008,8 @@ fn schema_json(topic: Option<&str>) -> Result<Value, String> {
                 "adapter": {"type": "string", "enum": ["claude", "claude-classic"], "default": "claude"},
                 "policies": {"type": "path", "required": false},
                 "part": {"type": "integer", "minimum": 1, "required": false, "description": "Deliver one rule-injection part."},
+                "input": {"type": "path", "required": false, "description": "Read the payload from this file instead of stdin."},
+                "runtime": {"type": "string", "required": false, "description": "The runtime running the hook, as the `runtime` fact; a `facts.runtime` in the payload wins."},
             },
             "stdout": "runtime protocol object; `{}` when allowing or failing open",
         }),
@@ -1003,6 +1037,7 @@ fn schema_json(topic: Option<&str>) -> Result<Value, String> {
                 "prompt": {"type": "string"},
                 "session": {"type": "string", "default": "evaluate"},
                 "cwd": {"type": "string"},
+                "runtime": {"type": "string", "required": false, "description": "The runtime to rehearse as, as `hook --runtime` does."},
                 "include_content": {"type": "boolean", "default": false},
             })),
         }),
@@ -1149,7 +1184,7 @@ fn plan_setup_action(runtime: SetupRuntime, project: bool) -> SetupAction {
     let (global_dir, project_dir, hook_file_name, hook_content) = match runtime {
         SetupRuntime::Claude => {
             let global =
-                dirs::home_dir().map_or_else(|| PathBuf::from(".claude"), |h| h.join(".claude"));
+                karen::home::claude_config_dir().unwrap_or_else(|| PathBuf::from(".claude"));
             (
                 global,
                 PathBuf::from(".claude"),
@@ -1158,8 +1193,7 @@ fn plan_setup_action(runtime: SetupRuntime, project: bool) -> SetupAction {
             )
         }
         SetupRuntime::Codex => {
-            let global =
-                dirs::home_dir().map_or_else(|| PathBuf::from(".codex"), |h| h.join(".codex"));
+            let global = karen::home::codex_home().unwrap_or_else(|| PathBuf::from(".codex"));
             (
                 global,
                 PathBuf::from(".codex"),
@@ -1168,10 +1202,8 @@ fn plan_setup_action(runtime: SetupRuntime, project: bool) -> SetupAction {
             )
         }
         SetupRuntime::OpenCode => {
-            let global = dirs::home_dir().map_or_else(
-                || PathBuf::from(".config/opencode"),
-                |h| h.join(".config").join("opencode"),
-            );
+            let global = karen::home::opencode_config_dir()
+                .unwrap_or_else(|| PathBuf::from(".config/opencode"));
             (
                 global,
                 PathBuf::from(".opencode"),
@@ -1688,38 +1720,38 @@ fn claude_hooks_json() -> String {
   \"_comment\": \"Claude Code hook registration for Karen-AI. Rule injection (karen hook --part N) and gate enforcement (karen hook) both use the Rust binary, which evaluates JSON/JSONC/JSON5 gates. This file is installed by `karen setup claude` — no manual editing of settings.json required.\",
   \"hooks\": {{
     \"SessionStart\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 1\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 2\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 3\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 4\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 5\", \"timeout\": 10}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude --part 1\", \"timeout\": 10}}] }},
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude --part 2\", \"timeout\": 10}}] }},
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude --part 3\", \"timeout\": 10}}] }},
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude --part 4\", \"timeout\": 10}}] }},
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude --part 5\", \"timeout\": 10}}] }}
     ],
     \"UserPromptSubmit\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude\", \"timeout\": 10}}] }}
     ],
     \"PreToolUse\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude\", \"timeout\": 10}}] }}
     ],
     \"PostToolUse\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude\", \"timeout\": 10}}] }}
     ],
     \"Stop\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude\", \"timeout\": 5}}] }}
     ],
     \"SessionEnd\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude\", \"timeout\": 5}}] }}
     ],
     \"PreCompact\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude\", \"timeout\": 5}}] }}
     ],
     \"PostCompact\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude\", \"timeout\": 5}}] }}
     ],
     \"SubagentStart\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude\", \"timeout\": 10}}] }}
     ],
     \"SubagentStop\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime claude\", \"timeout\": 5}}] }}
     ]
   }}
 }}")
@@ -1732,35 +1764,35 @@ fn codex_hooks_json() -> String {
   \"_comment\": \"Codex hook registration for Karen-AI. Rule injection (karen hook --part N) and gate enforcement (karen hook) both use the Rust binary, which evaluates JSON/JSONC/JSON5 gates. This file is installed by `karen setup codex` — no manual editing of Codex config required. Codex auto-discovers hooks from .codex-plugin/plugin.json.\",
   \"hooks\": {{
     \"SessionStart\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 1\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 2\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 3\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 4\", \"timeout\": 10}}] }},
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --part 5\", \"timeout\": 10}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex --part 1\", \"timeout\": 10}}] }},
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex --part 2\", \"timeout\": 10}}] }},
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex --part 3\", \"timeout\": 10}}] }},
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex --part 4\", \"timeout\": 10}}] }},
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex --part 5\", \"timeout\": 10}}] }}
     ],
     \"UserPromptSubmit\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex\", \"timeout\": 10}}] }}
     ],
     \"PreToolUse\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex\", \"timeout\": 10}}] }}
     ],
     \"PostToolUse\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex\", \"timeout\": 10}}] }}
     ],
     \"Stop\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex\", \"timeout\": 5}}] }}
     ],
     \"PreCompact\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex\", \"timeout\": 5}}] }}
     ],
     \"PostCompact\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex\", \"timeout\": 5}}] }}
     ],
     \"SubagentStart\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 10}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex\", \"timeout\": 10}}] }}
     ],
     \"SubagentStop\": [
-      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic\", \"timeout\": 5}}] }}
+      {{ \"hooks\": [{{\"type\": \"command\", \"command\": \"{karen} hook --adapter claude-classic --runtime codex\", \"timeout\": 5}}] }}
     ]
   }}
 }}")

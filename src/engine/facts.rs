@@ -81,14 +81,25 @@ pub fn runtime(raw: &Value) -> String {
 }
 
 /// The runtime, from what its payload carries: Claude Code and Codex name their
-/// transcript under their own home directories.
+/// transcript under their own configuration directories, wherever
+/// `CLAUDE_CONFIG_DIR` and `CODEX_HOME` put them, else under a `.claude` or
+/// `.codex` directory. The hook commands `karen setup` installs name the
+/// runtime outright (`--runtime`), so this is the fallback for hand-written
+/// hooks.
 fn detect_runtime(raw: &Value) -> String {
-    let transcript = raw
-        .get("transcript_path")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .replace('\\', "/");
-    if transcript.contains("/.codex/") {
+    let transcript = norm(
+        raw.get("transcript_path")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
+    let under = |dir: Option<PathBuf>| {
+        dir.is_some_and(|d| transcript.starts_with(&format!("{}/", norm(&d.to_string_lossy()))))
+    };
+    if under(crate::home::codex_home()) {
+        "codex".into()
+    } else if under(crate::home::claude_config_dir()) {
+        "claude".into()
+    } else if transcript.contains("/.codex/") {
         "codex".into()
     } else if transcript.contains("/.claude/") {
         "claude".into()
@@ -115,8 +126,12 @@ fn enabled_keys(obj: Option<&Value>, out: &mut BTreeSet<String>) {
     }
 }
 
+/// A path compared by text: `/`-separated, no trailing `/`, lower case.
+fn norm(path: &str) -> String {
+    path.replace('\\', "/").trim_end_matches('/').to_lowercase()
+}
+
 fn same_path(a: &str, b: &str) -> bool {
-    let norm = |s: &str| s.replace('\\', "/").trim_end_matches('/').to_lowercase();
     norm(a) == norm(b)
 }
 
@@ -124,12 +139,9 @@ fn same_path(a: &str, b: &str) -> bool {
 /// read from the runtime's own configuration files.
 fn mcp_servers(runtime: &str, cwd: Option<&str>) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    let Some(home) = crate::home::user_home() else {
-        return names;
-    };
     match runtime {
         "claude" => {
-            if let Some(user) = read_json(&home.join(".claude.json")) {
+            if let Some(user) = crate::home::claude_json().and_then(|p| read_json(&p)) {
                 enabled_keys(user.get("mcpServers"), &mut names);
                 if let (Some(cwd), Some(projects)) =
                     (cwd, user.get("projects").and_then(Value::as_object))
@@ -146,7 +158,10 @@ fn mcp_servers(runtime: &str, cwd: Option<&str>) -> BTreeSet<String> {
                     enabled_keys(project.get("mcpServers"), &mut names);
                 }
             }
-            for plugin in enabled_claude_plugins(&home) {
+            for plugin in crate::home::claude_config_dir()
+                .map(|dir| enabled_claude_plugins(&dir))
+                .unwrap_or_default()
+            {
                 if let Some(mcp) = read_json(&plugin.join(".mcp.json")) {
                     let servers = mcp.get("mcpServers").unwrap_or(&mcp);
                     enabled_keys(Some(servers), &mut names);
@@ -154,7 +169,8 @@ fn mcp_servers(runtime: &str, cwd: Option<&str>) -> BTreeSet<String> {
             }
         }
         "codex" => {
-            let text = std::fs::read_to_string(home.join(".codex").join("config.toml"))
+            let text = crate::home::codex_home()
+                .and_then(|dir| std::fs::read_to_string(dir.join("config.toml")).ok())
                 .unwrap_or_default();
             if let Ok(toml::Value::Table(table)) = text.parse::<toml::Value>() {
                 if let Some(toml::Value::Table(servers)) = table.get("mcp_servers") {
@@ -167,12 +183,24 @@ fn mcp_servers(runtime: &str, cwd: Option<&str>) -> BTreeSet<String> {
             }
         }
         "opencode" => {
-            let mut files = vec![home.join(".config").join("opencode").join("opencode.json")];
+            // Each directory holds `opencode.json` or `opencode.jsonc`.
+            let config_files = |dir: &Path| {
+                ["opencode.json", "opencode.jsonc"]
+                    .into_iter()
+                    .map(|name| dir.join(name))
+                    .collect::<Vec<_>>()
+            };
+            let mut files = crate::home::opencode_global_dir()
+                .map(|dir| config_files(&dir))
+                .unwrap_or_default();
             if let Some(cwd) = cwd {
-                files.push(Path::new(cwd).join("opencode.json"));
+                files.extend(config_files(Path::new(cwd)));
             }
-            if let Some(custom) = std::env::var_os("OPENCODE_CONFIG") {
+            if let Some(custom) = std::env::var_os("OPENCODE_CONFIG").filter(|v| !v.is_empty()) {
                 files.push(PathBuf::from(custom));
+            }
+            if let Some(dir) = std::env::var_os("OPENCODE_CONFIG_DIR").filter(|v| !v.is_empty()) {
+                files.extend(config_files(Path::new(&dir)));
             }
             // Later files override earlier ones, as OpenCode merges them.
             let mut merged: Map<String, Value> = Map::new();
@@ -190,15 +218,16 @@ fn mcp_servers(runtime: &str, cwd: Option<&str>) -> BTreeSet<String> {
     names
 }
 
-/// Install directories of the plugins Claude Code's user settings enable.
-fn enabled_claude_plugins(home: &Path) -> Vec<PathBuf> {
-    let Some(settings) = read_json(&home.join(".claude").join("settings.json")) else {
+/// Install directories of the plugins Claude Code's user settings enable, in its
+/// configuration directory `config`.
+fn enabled_claude_plugins(config: &Path) -> Vec<PathBuf> {
+    let Some(settings) = read_json(&config.join("settings.json")) else {
         return Vec::new();
     };
     let Some(enabled) = settings.get("enabledPlugins").and_then(Value::as_object) else {
         return Vec::new();
     };
-    let cache = home.join(".claude").join("plugins").join("cache");
+    let cache = config.join("plugins").join("cache");
     enabled
         .iter()
         .filter(|(_, on)| on.as_bool() == Some(true))

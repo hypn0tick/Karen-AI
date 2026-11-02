@@ -488,3 +488,151 @@ fn karen_evaluate_field_json_regex_reads_structured_fields() {
     assert_evaluate_action(&decide(stop(finished.clone(), "ok")), "allow");
     assert_evaluate_action(&decide(stop(finished, "DONE")), "deny");
 }
+
+/// `karen hook` with `payload` on stdin, `args` after `hook`, and `envs` set.
+fn hook_with(
+    env: &TestEnv,
+    payload: &serde_json::Value,
+    args: &[&str],
+    envs: &[(&str, &std::path::Path)],
+) -> String {
+    use std::io::Write;
+    let mut cmd = env.karen_cmd(&["hook"]);
+    cmd.args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let mut child = cmd.spawn().expect("spawn hook");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("write stdin");
+    drop(child.stdin.take());
+    let out = child.wait_with_output().expect("wait");
+    assert_exit_code(out.status.code().unwrap_or(-1), 0);
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+const RUNTIME_GATES: &str = r#"{ "gates": [
+  { "id": "on-claude", "event": "PreToolUse", "tool": "Bash", "priority": 50, "match": { "all": [ { "type": "field_equals", "field": "facts.runtime", "value": "claude" } ] }, "action": { "type": "deny", "reason": "runtime is claude" } },
+  { "id": "on-codex", "event": "PreToolUse", "tool": "Bash", "priority": 50, "match": { "all": [ { "type": "field_equals", "field": "facts.runtime", "value": "codex" } ] }, "action": { "type": "deny", "reason": "runtime is codex" } },
+  { "id": "brave-first", "event": "PreToolUse", "tool": "WebSearch", "priority": 50, "match": { "all": [ { "type": "field_regex", "field": "facts.mcp_servers", "pattern": "(^|,)brave-search(,|$)" } ] }, "action": { "type": "deny", "reason": "use brave" } }
+] }"#;
+
+#[test]
+#[serial]
+fn karen_hears_the_runtime_from_the_hook_command() {
+    // The hook command `karen setup` installs names its runtime, so a gate on
+    // `facts.runtime` holds whatever the payload carries. A runtime a bridge
+    // supplied in the payload still wins.
+    let env = TestEnv::with_config(crate::e2e::common::DEFAULT_CONFIG, &[], &[]);
+    std::fs::write(
+        env.policies_dir.join("gates").join("rt.json"),
+        RUNTIME_GATES,
+    )
+    .unwrap();
+    let bash = json!({ "hook_event_name": "PreToolUse", "session_id": "rt-flag", "tool_name": "Bash", "tool_input": { "command": "echo hi" } });
+    let out = hook_with(&env, &bash, &["--runtime", "codex"], &[]);
+    assert!(out.contains("runtime is codex"), "{out}");
+    let out = hook_with(&env, &bash, &["--runtime", "claude"], &[]);
+    assert!(out.contains("runtime is claude"), "{out}");
+    let mut bridged = bash.clone();
+    bridged["session_id"] = json!("rt-bridged");
+    bridged["facts"] = json!({ "runtime": "codex" });
+    let out = hook_with(&env, &bridged, &["--runtime", "claude"], &[]);
+    assert!(out.contains("runtime is codex"), "{out}");
+}
+
+#[test]
+#[serial]
+fn karen_names_the_runtime_wherever_its_config_directory_lives() {
+    // `CLAUDE_CONFIG_DIR` and `CODEX_HOME` move a runtime's configuration
+    // and transcripts; the runtime and its MCP servers once read only from
+    // `~/.claude` and `~/.codex`, so every runtime gate went quiet there.
+    let env = TestEnv::with_config(crate::e2e::common::DEFAULT_CONFIG, &[], &[]);
+    std::fs::write(
+        env.policies_dir.join("gates").join("rt.json"),
+        RUNTIME_GATES,
+    )
+    .unwrap();
+    let claude_dir = env.temp_dir.path().join("claude-cfg");
+    let codex_dir = env.temp_dir.path().join("codex-cfg");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let payload = |session: &str, tool: &str, transcript: std::path::PathBuf| {
+        json!({ "hook_event_name": "PreToolUse", "session_id": session, "tool_name": tool,
+                "tool_input": { "command": "echo hi", "query": "x" },
+                "transcript_path": transcript.display().to_string() })
+    };
+    let claude_transcript = claude_dir.join("projects").join("p").join("s.jsonl");
+    let codex_transcript = codex_dir
+        .join("sessions")
+        .join("2026")
+        .join("rollout-s.jsonl");
+
+    let out = hook_with(
+        &env,
+        &payload("cfg-claude", "Bash", claude_transcript.clone()),
+        &[],
+        &[("CLAUDE_CONFIG_DIR", &claude_dir)],
+    );
+    assert!(out.contains("runtime is claude"), "{out}");
+    let out = hook_with(
+        &env,
+        &payload("cfg-codex", "Bash", codex_transcript.clone()),
+        &[],
+        &[("CODEX_HOME", &codex_dir)],
+    );
+    assert!(out.contains("runtime is codex"), "{out}");
+
+    std::fs::write(
+        claude_dir.join(".claude.json"),
+        r#"{ "mcpServers": { "brave-search": { "command": "brave" } } }"#,
+    )
+    .unwrap();
+    let out = hook_with(
+        &env,
+        &payload("mcp-claude", "WebSearch", claude_transcript),
+        &[],
+        &[("CLAUDE_CONFIG_DIR", &claude_dir)],
+    );
+    assert!(out.contains("use brave"), "{out}");
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "[mcp_servers.brave-search]\ncommand = \"brave\"\n",
+    )
+    .unwrap();
+    let out = hook_with(
+        &env,
+        &payload("mcp-codex", "WebSearch", codex_transcript),
+        &[],
+        &[("CODEX_HOME", &codex_dir)],
+    );
+    assert!(out.contains("use brave"), "{out}");
+
+    let opencode_dir = env.temp_dir.path().join("opencode-cfg");
+    std::fs::create_dir_all(&opencode_dir).unwrap();
+    std::fs::write(
+        opencode_dir.join("opencode.json"),
+        r#"{ "mcp": { "brave-search": { "type": "local", "command": ["brave"] } } }"#,
+    )
+    .unwrap();
+    let mut bridged = payload(
+        "mcp-opencode",
+        "WebSearch",
+        env.temp_dir.path().join("none"),
+    );
+    bridged["facts"] = json!({ "runtime": "opencode" });
+    let out = hook_with(
+        &env,
+        &bridged,
+        &[],
+        &[("OPENCODE_CONFIG_DIR", &opencode_dir)],
+    );
+    assert!(out.contains("use brave"), "{out}");
+}
