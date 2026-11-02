@@ -1449,14 +1449,19 @@ const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API 
 // OpenCode has no command hooks, so this plugin forwards events to `karen hook`
 // in the Claude Classic dialect. KAREN_BIN overrides the binary (default: karen on PATH).
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 const KAREN = process.env.KAREN_BIN || "karen";
+const KAREN_HOME = process.env.KAREN_HOME || join(homedir(), ".karen");
 // Every failure below fails open, so each one leaves a line here (KAREN_LOG overrides the path):
 // a stop that was not held can then be explained from evidence instead of guessed.
-const LOG = process.env.KAREN_LOG || join(process.env.KAREN_HOME || join(homedir(), ".karen"), "logs", "karen-opencode.log");
+const LOG = process.env.KAREN_LOG || join(KAREN_HOME, "logs", "karen-opencode.log");
+// A payload holds tool input and the session's own words: it is written where only this user
+// can read it, under a name nobody can predict, and never through a file placed there first.
+const RUN = join(KAREN_HOME, "run");
 const fail = (stage, sid, detail) => {
   try {
     mkdirSync(dirname(LOG), { recursive: true });
@@ -1466,7 +1471,6 @@ const fail = (stage, sid, detail) => {
 const TOOL_NAMES = { list: "LS", webfetch: "WebFetch", todowrite: "TodoWrite", todoread: "TodoRead", multiedit: "MultiEdit" };
 const toolName = (tool) => TOOL_NAMES[tool] ?? (tool ? tool[0].toUpperCase() + tool.slice(1) : tool);
 
-let calls = 0;
 // An async spawn, never spawnSync: under OpenCode's embedded Bun on Windows, spawnSync of the
 // same binary timed out (ETIMEDOUT) on every call even with no stdin, while an async spawn
 // answers in ~30 ms; a synchronous call would also stall OpenCode's event loop. Every call
@@ -1479,7 +1483,7 @@ function karen(payload, part) {
   // The payload reaches Karen as a file named by --input and she gets no stdin:
   // OpenCode's runtime left a piped payload undelivered on some calls, and a file
   // descriptor handed over as stdin on every call, until each timed out.
-  const file = join(tmpdir(), `karen-${process.pid}-${++calls}.json`);
+  const file = join(RUN, `opencode-${process.pid}-${randomUUID()}.json`);
   args.push("--input", file);
   const sid = payload.session_id;
   const event = payload.hook_event_name;
@@ -1495,7 +1499,8 @@ function karen(payload, part) {
     let stderr = "";
     let child;
     try {
-      writeFileSync(file, JSON.stringify({ ...payload, facts }));
+      mkdirSync(RUN, { recursive: true, mode: 0o700 });
+      writeFileSync(file, JSON.stringify({ ...payload, facts }), { mode: 0o600, flag: "wx" });
       child = spawn(KAREN, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     } catch (e) {
       fail(`spawn ${KAREN} on ${event}`, sid, e);
@@ -1531,12 +1536,24 @@ export const KarenAI = async ({ directory, client }) => {
   const holds = new Map(); // session -> stops Karen has held in a row
   const plans = new Map(); // session -> todo list signature at its last review
   const offDuty = new Set(); // sessions already told that no policy is enforced
-  // A missing policy root fails open; each session hears it once, not on every call.
+  // A systemMessage holds one line per notice. A policy that does not load fails open, and
+  // each session hears that once, not on every call; every other line passes through.
   const notice = (sid, message) => {
-    if (!message || !message.startsWith("Karen-AI is not enforcing")) return message;
-    if (offDuty.has(sid)) return null;
-    offDuty.add(sid);
-    return message;
+    const lines = String(message ?? "").split("\n").filter((line) => {
+      if (!line.startsWith("Karen-AI is not enforcing")) return line.length > 0;
+      if (offDuty.has(sid)) return false;
+      offDuty.add(sid);
+      return true;
+    });
+    return lines.length ? lines.join("\n") : null;
+  };
+  // Only Karen's own status lines wake an idle session, and each at most once (the binary tells
+  // a policy merge once per session). A gate's warning on an allowed stop never does: waking a
+  // session for it would end every reply in another stop, another review and another wake.
+  const STATUS = /^Karen-AI (is not enforcing|policy merge)/;
+  const statusNotice = (sid, message) => {
+    const lines = (notice(sid, message) ?? "").split("\n").filter((line) => STATUS.test(line));
+    return lines.length ? lines.join("\n") : null;
   };
   // A prompt sent without a model runs on the session's creation-time model, so a session
   // whose model was changed mid-run would be woken on the old one. The wake names the model
@@ -1598,8 +1615,8 @@ export const KarenAI = async ({ directory, client }) => {
       const out = await karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: holds.has(sid), stop_hold_count: holds.get(sid) ?? 0, last_assistant_message: last.text, ...todo, ...(parent ? { agent_id: sid } : {}) });
       if (out.decision !== "block") {
         holds.delete(sid);
-        const offline = notice(sid, out.systemMessage);
-        if (offline) await wake(sid, `[Karen-AI] ${offline}`, "notice");
+        const status = statusNotice(sid, out.systemMessage);
+        if (status) await wake(sid, `[Karen-AI] ${status}`, "notice");
         return;
       }
       holds.set(sid, (holds.get(sid) ?? 0) + 1);

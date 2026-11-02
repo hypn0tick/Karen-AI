@@ -201,6 +201,11 @@ fn karen_setup_actual_opencode_writes_plugin() {
     // stdin stalled every call, each until the 10 s timeout: the bridge names the
     // payload file with --input and hands Karen no stdin.
     assert!(content.contains("args.push(\"--input\", file)"));
+    // The payload file is created exclusively and owner-only: a file someone
+    // placed at that name first is never written through.
+    assert!(content.contains(r#"{ mode: 0o600, flag: "wx" }"#));
+    assert!(content.contains("randomUUID()"));
+    assert!(!content.contains("tmpdir()"));
     assert!(content.contains("stdio: [\"ignore\", \"pipe\", \"pipe\"]"));
     assert!(!content.contains("input: JSON.stringify"));
     assert!(!content.contains("openSync"));

@@ -199,6 +199,174 @@ console.log(JSON.stringify({{ afters, prompts }}));
 
 #[test]
 #[serial]
+fn karen_runtime_opencode_plugin_never_wakes_a_session_for_a_gate_warning() {
+    // An allowed stop that carries a gate's warning once woke the session
+    // with that warning, so every reply ended in another idle, another
+    // review and another wake. Only a hold, and Karen's own status lines
+    // once each, wake a session; a warning is not a reason to keep talking.
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::new();
+    fs::write(
+        env.policies_dir.join("gates").join("oc-warn.json"),
+        r#"{ "id": "oc-closing-note", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny_once_then_warn", "first_reason": "Closing check before you stop.", "second_reason": "Closing check noted." }, "state": { "track": "session", "key": "oc-closing-note", "max_strikes": 2 } }"#,
+    )
+    .unwrap();
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+
+    let script = env.temp_dir.path().join("drive-warn.mjs");
+    fs::write(
+        &script,
+        format!(
+            r#"const {{ KarenAI }} = await import({plugin_url:?});
+const prompts = [];
+const history = [];
+const client = {{ session: {{
+  messages: async ({{ path }}) => ({{ data: history }}),
+  get: async ({{ path }}) => ({{ data: {{ id: path.id }} }}),
+  prompt: async ({{ path, body }}) => {{ prompts.push(path.id + ": " + body.parts.map((p) => p.text).join("")); return {{ data: {{}} }}; }},
+}} }};
+const hooks = await KarenAI({{ directory: {dir:?}, client }});
+const say = (id, text) => history.push({{ info: {{ id, role: "assistant" }}, parts: [{{ type: "text", text }}] }});
+const idle = () => hooks.event({{ event: {{ type: "session.idle", properties: {{ sessionID: "s1" }} }} }});
+const counts = [];
+for (const id of ["m1", "m2", "m3", "m4"]) {{ say(id, "Done with " + id + "."); await idle(); counts.push(prompts.length); }}
+console.log(JSON.stringify({{ counts, prompts }}));
+"#,
+            dir = project_dir.display().to_string(),
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    // The first stop is held once; every later stop only warns, and stays stopped.
+    assert_eq!(
+        result["counts"],
+        serde_json::json!([1, 1, 1, 1]),
+        "{result}"
+    );
+    assert!(
+        result["prompts"][0]
+            .as_str()
+            .unwrap()
+            .contains("Closing check before you stop."),
+        "{result}"
+    );
+}
+
+#[test]
+#[serial]
+fn karen_runtime_opencode_plugin_keeps_payloads_in_her_own_run_directory() {
+    // A payload holds tool input and the session's own words. It is written
+    // under `<Karen home>/run`, readable only by its owner, under a name
+    // nobody can predict, and removed once she has answered.
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::new();
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+    let script = env.temp_dir.path().join("drive-run.mjs");
+    fs::write(
+        &script,
+        format!(
+            r#"const {{ KarenAI }} = await import({plugin_url:?});
+const hooks = await KarenAI({{ directory: {dir:?} }});
+let verdict = "allowed";
+try {{ await hooks["tool.execute.before"]({{ tool: "bash", sessionID: "s1", callID: "c1" }}, {{ args: {{ command: "rm -rf build" }} }}); }} catch (e) {{ verdict = e.message; }}
+console.log(JSON.stringify({{ verdict }}));
+"#,
+            dir = project_dir.display().to_string(),
+        ),
+    )
+    .unwrap();
+    fs::write(
+        env.policies_dir.join("gates").join("oc-rm.json"),
+        r#"{ "id": "oc-rm", "event": "PreToolUse", "tool": "Bash", "match": { "all": [ { "type": "command_regex", "pattern": "^rm " } ] }, "action": { "type": "deny", "reason": "no rm" } }"#,
+    )
+    .unwrap();
+    let karen_home = env.temp_dir.path().join("karen-home");
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_HOME", &karen_home)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    assert!(
+        result["verdict"].as_str().unwrap().contains("no rm"),
+        "the payload reached her: {result}"
+    );
+    let run = karen_home.join("run");
+    assert!(run.is_dir(), "payloads are written under {}", run.display());
+    assert_eq!(
+        fs::read_dir(&run).unwrap().count(),
+        0,
+        "every payload is removed once she has answered"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&run).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "only the owner reads the run directory");
+    }
+}
+
+#[test]
+#[serial]
 fn karen_runtime_opencode_plugin_holds_idle_sessions_with_stop_gates() {
     // The Karen who stops you at the door: OpenCode has no Stop hook, so the
     // plugin turns `session.idle` into a Stop review and, when a gate blocks,
