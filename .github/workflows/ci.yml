@@ -75,16 +75,19 @@ jobs:
 
       - name: Scaffold a minimal policy root (the desk arrives empty; someone has to put one paper on it)
         run: |
-          mkdir policies
-          mkdir policies/gates
-          printf '%s\n' '{ "id": "ci-smoke", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "This gate exists so CI can prove the desk loads. She approves of proof of employment." } }' > policies/gates/ci-smoke.json
-          cp examples/gates/*.json policies/gates/
+          mkdir -p .karen/policies/gates
+          printf '%s\n' '{ "id": "ci-smoke", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "This gate exists so CI can prove the desk loads. She approves of proof of employment." } }' > .karen/policies/gates/ci-smoke.json
+          cp examples/gates/*.json .karen/policies/gates/
 
       - name: Verify binary
         run: |
           ./target/release/karen --help
           ./target/release/karen validate
           ./target/release/karen check
+          # A green validate proves nothing unless the scaffold was the layer it read.
+          ./target/release/karen check --json --fields gates > gates.json
+          grep -q '"id": *"ci-smoke"' gates.json
+          grep -q '"id": *"no-force-push-to-main"' gates.json
 
       - name: Stage binary (unique name; she has seen two files named karen collide, and she will not relive it)
         run: cp target/release/karen karen-linux-x86_64
@@ -124,16 +127,19 @@ jobs:
 
       - name: Scaffold a minimal policy root (the desk arrives empty; someone has to put one paper on it)
         run: |
-          mkdir policies
-          mkdir policies/gates
-          printf '%s\n' '{ "id": "ci-smoke", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "This gate exists so CI can prove the desk loads. She approves of proof of employment." } }' > policies/gates/ci-smoke.json
-          cp examples/gates/*.json policies/gates/
+          mkdir -p .karen/policies/gates
+          printf '%s\n' '{ "id": "ci-smoke", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "This gate exists so CI can prove the desk loads. She approves of proof of employment." } }' > .karen/policies/gates/ci-smoke.json
+          cp examples/gates/*.json .karen/policies/gates/
 
       - name: Verify binary
         run: |
           ./target/release/karen --help
           ./target/release/karen validate
           ./target/release/karen check
+          # A green validate proves nothing unless the scaffold was the layer it read.
+          ./target/release/karen check --json --fields gates > gates.json
+          grep -q '"id": *"ci-smoke"' gates.json
+          grep -q '"id": *"no-force-push-to-main"' gates.json
 
       - name: Stage binary (unique name; macos-latest is arm64, and she labels boxes honestly)
         run: cp target/release/karen karen-macos-aarch64
@@ -173,15 +179,21 @@ jobs:
 
       - name: Scaffold a minimal policy root (the desk arrives empty; someone has to put one paper on it)
         run: |
-          New-Item -ItemType Directory -Force -Path policies\gates | Out-Null
-          Set-Content -Path policies\gates\ci-smoke.json -Value '{ "id": "ci-smoke", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "This gate exists so CI can prove the desk loads. She approves of proof of employment." } }'
-          Copy-Item examples\gates\*.json policies\gates\
+          New-Item -ItemType Directory -Force -Path .karen\policies\gates | Out-Null
+          Set-Content -Path .karen\policies\gates\ci-smoke.json -Value '{ "id": "ci-smoke", "event": "PreToolUse", "match": { "all": [ { "type": "always" } ] }, "action": { "type": "deny", "reason": "This gate exists so CI can prove the desk loads. She approves of proof of employment." } }'
+          Copy-Item examples\gates\*.json .karen\policies\gates\
 
       - name: Verify binary
         run: |
           .\target\release\karen.exe --help
           .\target\release\karen.exe validate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\target\release\karen.exe check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # A green validate proves nothing unless the scaffold was the layer it read.
+          $gates = (.\target\release\karen.exe check --json --fields gates) -join "`n"
+          if ($gates -notmatch '"id":\s*"ci-smoke"') { Write-Error "ci-smoke gate not loaded"; exit 1 }
+          if ($gates -notmatch '"id":\s*"no-force-push-to-main"') { Write-Error "example gates not loaded"; exit 1 }
 
       - name: Stage binary (unique name; the collision was never her fault, but she fixed it anyway)
         run: copy target\release\karen.exe karen-windows-x86_64.exe

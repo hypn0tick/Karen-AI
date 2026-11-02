@@ -1095,7 +1095,8 @@ fn schema_json(topic: Option<&str>) -> Result<Value, String> {
             "stdout carries data only; diagnostics and logs go to stderr",
             "hook output is the runtime protocol object, not the CLI JSON envelope",
             "evaluate is read-only and always exits 0 on a successful evaluation",
-            "policies are loaded from --policies, KAREN_POLICIES, or CLAUDE_PLUGIN_ROOT/policies",
+            "policies merge three layers: built-in, the user layer <Karen home>/policies, then the project layer (--policies, else KAREN_POLICIES, else the nearest .karen/policies up to the repository root, else git config karen.policies)",
+            "a file, gate or rule that does not load is left out and reported; every other gate stays enforced",
         ],
     }))
 }
