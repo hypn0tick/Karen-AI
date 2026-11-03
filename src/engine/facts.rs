@@ -16,10 +16,17 @@ use std::process::Command;
 const SESSION_STABLE: &[&str] = &["runtime", "mcp_servers", "tools"];
 /// Most uncommitted paths reported, so a large dirty tree stays a small payload.
 const GIT_LINES: usize = 50;
+/// Where a transcript tail read starts: the occupancy of the latest turn sits
+/// in its last lines, so one read covers the common case.
+const TAIL_START: u64 = 256 * 1024;
+/// The most a tail read grows to before she calls the fact unreadable: the
+/// last usage line can sit behind megabytes of tool output, but never behind
+/// unbounded megabytes. Past the cap the fact is absent, never guessed.
+const TAIL_MAX: u64 = 8 * 1024 * 1024;
 
 /// Adds every referenced fact to `req.raw["facts"]`.
 pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) {
-    let wanted: BTreeSet<String> = set
+    let mut wanted: BTreeSet<String> = set
         .gates
         .iter()
         .filter(|g| g.applies_to(&req.event, req.tool_name.as_deref()))
@@ -27,6 +34,12 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
         .filter_map(|f| f.strip_prefix("facts."))
         .map(|f| f.split('.').next().unwrap_or(f).to_string())
         .collect();
+    // The ratio is read from the two facts it divides: a gate that names it
+    // asks for both, whichever of the three it matches on.
+    if wanted.contains("context_ratio") {
+        wanted.insert("context_tokens".into());
+        wanted.insert("context_window".into());
+    }
     if wanted.is_empty() {
         return;
     }
@@ -37,6 +50,23 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
         .cloned()
         .unwrap_or_default();
     let runtime = runtime(&req.raw);
+    // The occupancy of the latest turn, read once for both facts that share
+    // it. Only Claude Code and Codex record it in a transcript she can read; a
+    // runtime that supplies its own facts (the OpenCode bridge) wins without
+    // her reading anything, so the facts a gate names stay absent here.
+    let want_tokens = wanted.contains("context_tokens") && !facts.contains_key("context_tokens");
+    let want_window = wanted.contains("context_window") && !facts.contains_key("context_window");
+    let latest_turn: Option<(u64, Option<u64>)> =
+        if (want_tokens || want_window) && matches!(runtime.as_str(), "claude" | "codex") {
+            transcript_path(&req.raw).and_then(|path| match runtime.as_str() {
+                "claude" => read_tail(Path::new(path), TAIL_START, TAIL_MAX, claude_usage)
+                    .map(|tokens| (tokens, None)),
+                _ => read_tail(Path::new(path), TAIL_START, TAIL_MAX, codex_usage),
+            })
+        } else {
+            None
+        };
+    let want_ratio = wanted.contains("context_ratio");
     for name in wanted {
         if facts.contains_key(&name) {
             continue;
@@ -49,17 +79,32 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
                 continue;
             }
         }
-        let value = match name.as_str() {
-            "runtime" => Value::from(runtime.clone()),
-            "mcp_servers" => Value::from(join(mcp_servers(&runtime, req.cwd.as_deref()))),
-            "tools" => Value::from(join(tools_on_path(&set.config.facts.tools))),
-            "git_uncommitted" => Value::from(git_uncommitted(req.cwd.as_deref())),
+        // A fact she cannot read is absent, never zero: no occupancy fact
+        // invents a number, so a gate matching on one never matches on noise.
+        let value: Option<Value> = match name.as_str() {
+            "runtime" => Some(Value::from(runtime.clone())),
+            "mcp_servers" => Some(Value::from(join(mcp_servers(&runtime, req.cwd.as_deref())))),
+            "tools" => Some(Value::from(join(tools_on_path(&set.config.facts.tools)))),
+            "git_uncommitted" => Some(Value::from(git_uncommitted(req.cwd.as_deref()))),
+            "context_tokens" => latest_turn.map(|(tokens, _)| Value::from(tokens)),
+            "context_window" => latest_turn
+                .and_then(|(_, window)| window)
+                .or_else(|| configured_window(set, &runtime))
+                .map(Value::from),
             _ => continue,
+        };
+        let Some(value) = value else {
+            continue;
         };
         if stable {
             state.set(&req.session_id, &cache_key, value.clone());
         }
         facts.insert(name, value);
+    }
+    if want_ratio && !facts.contains_key("context_ratio") {
+        if let Some(ratio) = context_ratio(&facts) {
+            facts.insert("context_ratio".into(), Value::from(ratio));
+        }
     }
     if let Value::Object(raw) = &mut req.raw {
         raw.insert("facts".into(), Value::Object(facts));
@@ -68,6 +113,109 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
 
 fn join(names: BTreeSet<String>) -> String {
     names.into_iter().collect::<Vec<_>>().join(",")
+}
+
+/// The context window configured for a runtime (`[facts.context_window]`
+/// `claude = ...`), when the runtime does not report its own. The key names the
+/// runtime, so one runtime's number never answers for another's.
+fn configured_window(set: &PolicySet, runtime: &str) -> Option<u64> {
+    set.config
+        .facts
+        .context_window
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(runtime))
+        .map(|(_, window)| *window)
+}
+
+/// `facts.context_ratio`: the latest turn's occupancy over the window it runs
+/// in, absent when either side is missing or the window is zero, because a
+/// ratio of nothing over nothing is noise, not a number.
+fn context_ratio(facts: &Map<String, Value>) -> Option<f64> {
+    let tokens = facts.get("context_tokens")?.as_f64()?;
+    let window = facts.get("context_window")?.as_f64()?;
+    (window > 0.0).then_some(tokens / window)
+}
+
+/// Where the runtime recorded this session's turns, when it says so.
+fn transcript_path(raw: &Value) -> Option<&str> {
+    raw.get("transcript_path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+}
+
+/// The last line `parse` accepts, reading the file's tail backwards in windows
+/// that double from `start` to `max`: the line she wants sits at a turn's end,
+/// but a turn's last lines can be megabytes of tool output, so a fixed tail can
+/// stop short of it. A rejected line costs one parse; past `max` the answer is
+/// none, so a fact she cannot read is absent, never guessed.
+fn read_tail<T>(path: &Path, start: u64, max: u64, parse: impl Fn(&str) -> Option<T>) -> Option<T> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let mut window = start.min(max);
+    loop {
+        let begin = len.saturating_sub(window);
+        file.seek(SeekFrom::Start(begin)).ok()?;
+        let mut bytes = Vec::new();
+        (&mut file).take(len - begin).read_to_end(&mut bytes).ok()?;
+        let text = String::from_utf8_lossy(&bytes);
+        for line in text.lines().rev() {
+            if let Some(found) = parse(line) {
+                return Some(found);
+            }
+        }
+        if begin == 0 || window >= max {
+            return None;
+        }
+        window = window.saturating_mul(2).min(max);
+    }
+}
+
+/// The occupancy of Claude Code's latest assistant turn: `input_tokens` plus
+/// both cache counts, from the last entry of its session transcript that
+/// carries them.
+fn claude_usage(line: &str) -> Option<u64> {
+    let entry: Value = serde_json::from_str(line).ok()?;
+    if entry.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let usage = entry.get("message")?.get("usage")?;
+    if !usage.is_object() {
+        return None;
+    }
+    let count = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+    Some(
+        count("input_tokens")
+            + count("cache_read_input_tokens")
+            + count("cache_creation_input_tokens"),
+    )
+}
+
+/// The occupancy of Codex's latest turn and the window it runs in, from the
+/// last `token_count` event of its rollout: `last_token_usage` and
+/// `model_context_window`. A closed rollout is zstd-compressed and she does not
+/// decompress it, so unreadable stays absent.
+fn codex_usage(line: &str) -> Option<(u64, Option<u64>)> {
+    let entry: Value = serde_json::from_str(line).ok()?;
+    if entry.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    let payload = entry.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("token_count") {
+        return None;
+    }
+    let info = payload.get("info")?;
+    let usage = info.get("last_token_usage")?;
+    if !usage.is_object() {
+        return None;
+    }
+    let count = |name: &str| usage.get(name).and_then(Value::as_u64).unwrap_or(0);
+    let tokens =
+        count("input_tokens") + count("cached_input_tokens") + count("cache_write_input_tokens");
+    Some((
+        tokens,
+        info.get("model_context_window").and_then(Value::as_u64),
+    ))
 }
 
 /// The runtime a payload came from: the `facts.runtime` its bridge supplied
@@ -286,4 +434,90 @@ fn git_uncommitted(cwd: Option<&str>) -> String {
         .take(GIT_LINES)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tail_read_grows_its_window_until_the_line_fits() {
+        // The Karen who reads backwards before she reads more: the line she
+        // wants sits further back than her first window, and she doubles the
+        // window instead of calling the fact unreadable.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("tail.txt");
+        let text = format!("{}\nfound\n{}", "x".repeat(300), "y".repeat(300));
+        std::fs::write(&path, text).expect("write fixture");
+        let found = read_tail(&path, 64, 1024, |line| {
+            (line == "found").then_some(line.to_string())
+        });
+        assert_eq!(found.as_deref(), Some("found"));
+    }
+
+    #[test]
+    fn tail_read_stops_at_the_cap_and_reports_nothing() {
+        // Past the cap the answer is none: a fact she cannot read is absent,
+        // never a guess dressed up as a number.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cap.txt");
+        let text = format!("found\n{}", "y".repeat(300));
+        std::fs::write(&path, text).expect("write fixture");
+        let found: Option<String> = read_tail(&path, 64, 128, |line| {
+            (line == "found").then(|| line.to_string())
+        });
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn tail_read_covers_a_whole_small_file_in_one_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("small.txt");
+        std::fs::write(&path, "noise\nfound\n").expect("write fixture");
+        let found = read_tail(&path, 64, 128, |line| {
+            (line == "found").then(|| line.to_string())
+        });
+        assert_eq!(found.as_deref(), Some("found"));
+    }
+
+    #[test]
+    fn claude_usage_sums_input_and_both_cache_counts() {
+        let line = r#"{"type":"assistant","message":{"model":"m","usage":{"input_tokens":200,"cache_read_input_tokens":4000,"cache_creation_input_tokens":136,"output_tokens":50}}}"#;
+        assert_eq!(claude_usage(line), Some(4336));
+    }
+
+    #[test]
+    fn claude_usage_skips_lines_without_usage() {
+        // A user line or a broken entry is skipped, not summed as zero.
+        assert_eq!(claude_usage(r#"{"type":"user","message":{}}"#), None);
+        assert_eq!(claude_usage(r#"{"type":"assistant"}"#), None);
+        assert_eq!(
+            claude_usage(r#"{"type":"assistant","message":{"usage":"nope"}}"#),
+            None
+        );
+        assert_eq!(claude_usage("not json"), None);
+    }
+
+    #[test]
+    fn codex_usage_reads_the_last_token_count() {
+        let line = r#"{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{},"last_token_usage":{"input_tokens":100,"cached_input_tokens":200,"cache_write_input_tokens":300,"output_tokens":1},"model_context_window":258400}}}"#;
+        assert_eq!(codex_usage(line), Some((600, Some(258_400))));
+    }
+
+    #[test]
+    fn codex_usage_reports_the_window_absent_rather_than_none_of_it() {
+        // No `model_context_window` in the event: the tokens still count, and
+        // the window is absent, so a configured window can answer for it.
+        let line = r#"{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":7}}}}"#;
+        assert_eq!(codex_usage(line), Some((7, None)));
+    }
+
+    #[test]
+    fn codex_usage_skips_other_events() {
+        assert_eq!(
+            codex_usage(r#"{"type":"event_msg","payload":{"type":"agent_message"}}"#),
+            None
+        );
+        assert_eq!(codex_usage(r#"{"type":"turn_context"}"#), None);
+    }
 }

@@ -2,6 +2,7 @@
 
 use crate::policy::gate::{CompileError, Gate, GateDef, Layer};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -26,12 +27,20 @@ pub struct Config {
 pub struct FactsConfig {
     #[serde(default = "default_fact_tools")]
     pub tools: Vec<String>,
+    /// Context window sizes per runtime (`claude = ...`), for
+    /// `facts.context_window` when the runtime does not report its own: one
+    /// runtime's number never answers for another's, and one model id can run
+    /// at several windows, so she reports a configured size over guessing one.
+    /// A window the runtime reports itself always wins over this.
+    #[serde(default)]
+    pub context_window: HashMap<String, u64>,
 }
 
 impl Default for FactsConfig {
     fn default() -> Self {
         Self {
             tools: default_fact_tools(),
+            context_window: HashMap::new(),
         }
     }
 }
