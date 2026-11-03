@@ -30,7 +30,13 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
         .gates
         .iter()
         .filter(|g| g.applies_to(&req.event, req.tool_name.as_deref()))
-        .flat_map(|g| g.matcher.fields())
+        // A gate's latch watches a field of the payload too, and the gate
+        // cannot watch the fact without it being there to be read.
+        .flat_map(|g| {
+            g.matcher
+                .fields()
+                .chain(g.state.as_ref().and_then(|s| s.field.as_deref()))
+        })
         .filter_map(|f| f.strip_prefix("facts."))
         .map(|f| f.split('.').next().unwrap_or(f).to_string())
         .collect();

@@ -4,4 +4,6 @@
 #[cfg(test)]
 mod backends;
 #[cfg(test)]
+mod latch;
+#[cfg(test)]
 mod strikes;

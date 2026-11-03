@@ -185,9 +185,31 @@ pub struct StateSpec {
     #[serde(default = "default_max_strikes")]
     pub max_strikes: u32,
     /// Forget this key's strikes when the session compacts. A nudge that taught
-    /// something the compaction then dropped gets to teach it again.
+    /// something the compaction then dropped gets to nudge once more.
     #[serde(default)]
     pub reset_on_compact: bool,
+    /// The payload field a fired gate watches (`facts.context_ratio`), when
+    /// the spec is a latch: the gate fires once, then stays quiet until the
+    /// field falls back below [`Self::rearm_below`]. The fact is collected the
+    /// same way a `field_*` condition's is, so a latch on `facts.X` reads it.
+    #[serde(default)]
+    pub field: Option<String>,
+    /// The line the latch's `field` must fall back below before the gate may
+    /// fire again (the ratio after a compaction, not the one that tripped it).
+    #[serde(default)]
+    pub rearm_below: Option<f64>,
+}
+
+impl StateSpec {
+    /// The latch this spec arms, when it is one: the `field` a fired gate
+    /// watches, and the `rearm_below` line the field must fall back below
+    /// before the gate may fire again. Both or neither, on any action: a
+    /// latch without a line never re-arms, one without a field watches
+    /// nothing, and a strike counter is not a latch at all.
+    #[must_use]
+    pub fn latch(&self) -> Option<(&str, f64)> {
+        Some((self.field.as_deref()?, self.rearm_below?))
+    }
 }
 
 /// What a strike count belongs to.
@@ -460,7 +482,10 @@ impl Matcher {
 }
 
 /// `tool_input.<path>`, else the top-level payload `<path>`; `.` separates nested keys.
-fn lookup<'a>(req: &'a crate::types::EngineRequest, path: &str) -> Option<&'a serde_json::Value> {
+pub(crate) fn lookup<'a>(
+    req: &'a crate::types::EngineRequest,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
     let walk = |root: &'a serde_json::Value| path.split('.').try_fold(root, |v, k| v.get(k));
     req.tool_input
         .as_ref()

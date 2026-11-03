@@ -2,9 +2,10 @@
 
 use crate::engine::injector;
 use crate::policy::PolicySet;
-use crate::policy::gate::{ActionDef, Gate};
+use crate::policy::gate::{ActionDef, Gate, StateSpec};
 use crate::state::StateStore;
 use crate::types::{Action, EngineRequest, EngineResponse, Event, Injection, InjectionKind};
+use serde_json::Value;
 use std::sync::{Arc, RwLock};
 
 pub struct Engine {
@@ -93,10 +94,37 @@ impl Engine {
         }
 
         for gate in Self::applicable(&policies, req) {
+            // A latch re-arms on every dispatch, matched or not: a gate that
+            // fires at 40% can never match below 30%, so a latch that waited
+            // for a match to clear would hold the gate shut for good. The
+            // field falling back below the line clears it, whatever the gate
+            // matches on. The Karen who resets the tripwire walking past it,
+            // not by stepping on it once more.
+            if let Some((field, rearm_below)) = gate.state.as_ref().and_then(StateSpec::latch) {
+                let key = state_key(gate);
+                let below_line = crate::policy::gate::lookup(req, field)
+                    .and_then(serde_json::Value::as_f64)
+                    .is_some_and(|number| number < rearm_below);
+                if below_line {
+                    self.state.remove(&req.session_id, &key);
+                }
+                // Latched, and the field has not fallen back below the line:
+                // the gate already fired, and she stays quiet until it has.
+                if self.state.get(&req.session_id, &key).is_some() {
+                    continue;
+                }
+            }
             if !gate.matcher.matches(req) {
                 continue;
             }
             fired.push(gate.id.clone());
+            // A fired latch arms: the next matching dispatch is held until the
+            // field falls back below the line. The value is a timestamp, so
+            // the ledger says when the gate last fired, not just that it did.
+            if gate.state.as_ref().and_then(StateSpec::latch).is_some() {
+                self.state
+                    .set(&req.session_id, &state_key(gate), Value::from(now_millis()));
+            }
 
             match self.evaluate(gate, req) {
                 Verdict::Deny(action, injection) => {
@@ -237,6 +265,24 @@ enum Verdict {
     Deny(Action, Option<Injection>), // The Karen who says no, and has the policy to back it up.
     Ask(Action),              // The Karen who escalates, because you need adult supervision.
     Modify(Action),           // The Karen who gets fed up and just does it for you.
+}
+
+/// The state key a gate latches and counts under: its spec's `key`, else its id.
+fn state_key(gate: &Gate) -> String {
+    gate.state
+        .as_ref()
+        .map_or(gate.id.as_str(), |s| s.key.as_str())
+        .to_string()
+}
+
+/// Wall-clock milliseconds since the epoch: the value a latch arms with, so
+/// the ledger records when the gate last fired, not just that it did.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn deny_with(action: Action, fired: Vec<String>, injections: Vec<Injection>) -> EngineResponse {
