@@ -242,7 +242,7 @@ A gate can read what the session's runtime actually has instead of someone remem
 }
 ```
 
-A gate that should fire once per filling, not once per call, latches (see [State](#state-deny_once_then_warn)); the OpenCode one tells the agent to call its `compress` tool on the work it finished, naming what to keep:
+A gate that should fire once per filling, not once per call, latches (see [State](#state-deny_once_then_warn)); this one holds the stop until the agent compresses the work the session finished, keeping what a resume needs:
 
 ```json
 {
@@ -252,7 +252,7 @@ A gate that should fire once per filling, not once per call, latches (see [State
   "match": { "all": [ { "type": "field_gte", "field": "facts.context_ratio", "value": 0.4 } ] },
   "action": {
     "type": "deny",
-    "reason": "The window is 40% full. Call the compress tool on the work this session finished — name the files and decisions to keep in the summary — then try this stop again."
+    "reason": "The window is 40% full. Call your runtime's compress tool — e.g. DCP's `compress` — on the work this session finished, keeping the open items and the shas, then try this stop again."
   },
   "state": { "key": "latch:compress", "field": "facts.context_ratio", "rearm_below": 0.3 }
 }
