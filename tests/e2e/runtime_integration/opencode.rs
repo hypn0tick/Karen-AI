@@ -855,3 +855,128 @@ await new Promise((r) => setTimeout(r, 100));
         fs::read_to_string(karen_home.join("logs").join("karen-opencode.log")).unwrap_or_default();
     assert!(default_log.contains("on PreToolUse"), "{default_log}");
 }
+
+#[test]
+#[serial]
+fn karen_opencode_plugin_supplies_occupancy_facts_from_its_caches() {
+    // The Karen who checks the meter she wired herself: `message.updated` caches
+    // the turn's tokens, the window is resolved once and cached, a gate on
+    // `facts.context_ratio` fires on what the bridge supplied — and a deleted
+    // session leaves nothing behind for the next one to inherit.
+    const RATIO_GATE: &str = r#"{
+  "id": "half-full",
+  "description": "Hold a tool call at 40% of the window.",
+  "event": "PreToolUse",
+  "match": { "all": [ { "type": "field_gte", "field": "facts.context_ratio", "value": 0.4 } ] },
+  "action": { "type": "deny", "reason": "context half full: compress the finished work" }
+}"#;
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::with_config(
+        crate::e2e::common::DEFAULT_CONFIG,
+        &[crate::e2e::common::GateFixture {
+            file: "half-full.json",
+            content: RATIO_GATE,
+        }],
+        &[],
+    );
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+
+    // A mock OpenCode SDK client: one model, one window, counting lookups so the
+    // test can prove the window is resolved once, not once per tool call.
+    let script = env.temp_dir.path().join("drive-occupancy.mjs");
+    let driver = r#"
+const { KarenAI } = await import("__PLUGIN__");
+const calls = { session: 0, providers: 0 };
+const client = {
+  session: {
+    get: async () => { calls.session++; return { data: { model: { providerID: "mock", modelID: "big" }, parentID: null } }; },
+    messages: async () => ({ data: [] }),
+    todo: async () => ({ data: [] }),
+    prompt: async () => ({})
+  },
+  config: {
+    providers: async () => { calls.providers++; return { data: { providers: [{ id: "mock", models: { big: { limit: { context: 1000 } } } }], default: null } }; }
+  }
+};
+const hooks = await KarenAI({ directory: "__DIR__", client });
+const result = {};
+await hooks.event({ event: { type: "message.updated", properties: { sessionID: "s1", info: { role: "assistant", id: "a1", tokens: { input: 400, output: 5, cache: { read: 80, write: 20 } } } } } });
+const before = async (call) => {
+  try {
+    await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1", callID: call }, { args: { command: "echo hi" } });
+    return "allowed";
+  } catch (e) { return "denied: " + e.message; }
+};
+result.first = await before("c1");
+result.second = await before("c2");
+await hooks.event({ event: { type: "session.deleted", properties: { sessionID: "s1" } } });
+result.third = await before("c3");
+result.sessionLookups = calls.session;
+result.providerLookups = calls.providers;
+console.log(JSON.stringify(result));
+"#
+    .replace("__PLUGIN__", &plugin_url)
+    .replace("__DIR__", &project_dir.display().to_string());
+    fs::write(&script, driver).unwrap();
+
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+
+    // 500 tokens in a 1000-token window is half full: the bridge supplied both
+    // facts, and the gate fired on the ratio Karen computed from them.
+    let first = result["first"].as_str().unwrap();
+    assert!(
+        first.starts_with("denied: Karen-AI:") && first.contains("half full"),
+        "the occupancy gate must block through the plugin: {first}"
+    );
+    let second = result["second"].as_str().unwrap();
+    assert!(
+        second.starts_with("denied: Karen-AI:"),
+        "a matching call with the latch open fires again: {second}"
+    );
+    // The window was resolved once for the first call and once after the
+    // session was deleted — never once per tool call in between.
+    assert_eq!(
+        result["providerLookups"], 2,
+        "window must be cached per session: {result}"
+    );
+    assert_eq!(
+        result["sessionLookups"], 2,
+        "session must be read once per resolution: {result}"
+    );
+    // The deleted session's caches are gone: no tokens, no ratio, no match.
+    assert_eq!(
+        result["third"], "allowed",
+        "a deleted session leaves no facts behind: {result}"
+    );
+}

@@ -1491,6 +1491,9 @@ fn is_karen_hook(entry: &Value) -> bool {
 const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API v1). Installed by `karen setup opencode`.
 // OpenCode has no command hooks, so this plugin forwards events to `karen hook`
 // in the Claude Classic dialect. KAREN_BIN overrides the binary (default: karen on PATH).
+// Occupancy facts ride the payload too: the session's context tokens (kept current by
+// `message.updated`) and its model's context window (resolved once per session), so a
+// gate on `facts.context_ratio` runs on OpenCode without reading anything itself.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -1569,7 +1572,14 @@ function karen(payload, part) {
 // sent back into the session as a prompt, which is how OpenCode keeps a turn going.
 const lastAssistant = (messages) => {
   const m = [...(messages ?? [])].reverse().find((x) => x?.info?.role === "assistant");
-  return m ? { id: m.info.id, text: (m.parts ?? []).filter((p) => p.type === "text").map((p) => p.text).join("\n") } : null;
+  if (!m) return null;
+  const t = m.info.tokens;
+  return {
+    id: m.info.id,
+    text: (m.parts ?? []).filter((p) => p.type === "text").map((p) => p.text).join("\n"),
+    // Context tokens as Karen counts them: input plus both cache counts.
+    tokens: t ? (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0) : 0,
+  };
 };
 
 export const KarenAI = async ({ directory, client }) => {
@@ -1579,6 +1589,8 @@ export const KarenAI = async ({ directory, client }) => {
   const holds = new Map(); // session -> stops Karen has held in a row
   const plans = new Map(); // session -> todo list signature at its last review
   const offDuty = new Set(); // sessions already told that no policy is enforced
+  const lastTokens = new Map(); // session -> context tokens of its last assistant message
+  const windows = new Map(); // session -> its model's context window, null when resolved to none
   // A systemMessage holds one line per notice. A policy that does not load fails open, and
   // each session hears that once, not on every call; every other line passes through.
   const notice = (sid, message) => {
@@ -1597,6 +1609,36 @@ export const KarenAI = async ({ directory, client }) => {
   const statusNotice = (sid, message) => {
     const lines = (notice(sid, message) ?? "").split("\n").filter((line) => STATUS.test(line));
     return lines.length ? lines.join("\n") : null;
+  };
+  // The occupancy facts of a session, as its own payload `facts`: the context tokens of its
+  // last assistant message (kept current by `message.updated`) and its model's context window,
+  // resolved once per session and cached. A gate on every tool call then costs no API call of
+  // its own, and each fact is supplied only when known: Karen reads a payload's own facts
+  // first and never guesses one.
+  const contextFacts = async (sid) => {
+    const facts = {};
+    const tokens = lastTokens.get(sid);
+    if (Number.isFinite(tokens)) facts.context_tokens = tokens;
+    if (sid && client?.session && client?.config) {
+      try {
+        if (!windows.has(sid)) {
+          const s = (await client.session.get({ path: { id: sid } }))?.data;
+          const { providerID, modelID } = s?.model ?? {};
+          const model = providerID && modelID
+            ? (await client.config.providers())?.data?.providers?.find((p) => p.id === providerID)?.models?.[modelID]
+            : undefined;
+          const found = model?.limit?.context;
+          // A window she could not resolve is cached as null, so one failed lookup never
+          // becomes one lookup per tool call; the fact stays absent, never guessed.
+          windows.set(sid, Number.isFinite(found) ? found : null);
+        }
+        const limit = windows.get(sid);
+        if (Number.isFinite(limit)) facts.context_window = limit;
+      } catch (e) {
+        fail("context window on session.get/providers", sid, e);
+      }
+    }
+    return facts;
   };
   // A prompt sent without a model runs on the session's creation-time model, so a session
   // whose model was changed mid-run would be woken on the old one. The wake names the model
@@ -1625,6 +1667,33 @@ export const KarenAI = async ({ directory, client }) => {
   };
   return {
     event: async ({ event }) => {
+      // `message.updated` is the meter reader: each assistant message reports its tokens as
+      // it lands, so the cache a tool hook reads is current without the hook asking anyone.
+      if (event?.type === "message.updated") {
+        const info = event?.properties?.info;
+        if (info?.role === "assistant") {
+          const t = info.tokens;
+          const sid = event?.properties?.sessionID ?? info.sessionID;
+          const tokens = t ? (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0) : 0;
+          if (sid && tokens > 0) lastTokens.set(sid, tokens);
+        }
+        return;
+      }
+      // A deleted session's entries are dropped the moment it is, so a long-running
+      // OpenCode does not carry a Map for every session it ever saw.
+      if (event?.type === "session.deleted") {
+        const sid = event?.properties?.sessionID;
+        if (sid) {
+          rules.delete(sid);
+          reviewed.delete(sid);
+          holds.delete(sid);
+          plans.delete(sid);
+          offDuty.delete(sid);
+          lastTokens.delete(sid);
+          windows.delete(sid);
+        }
+        return;
+      }
       const idle = event?.type === "session.idle" || (event?.type === "session.status" && event.properties?.status?.type === "idle");
       const sid = event?.properties?.sessionID;
       if (!idle || !sid || !client?.session) return;
@@ -1632,6 +1701,10 @@ export const KarenAI = async ({ directory, client }) => {
       try { last = lastAssistant((await client.session.messages({ path: { id: sid } }))?.data); } catch (e) { fail("session.messages on idle", sid, e); return; }
       if (!last || reviewed.get(sid) === last.id) return;
       reviewed.set(sid, last.id);
+      // The latest assistant message is in hand, so its tokens are read from it directly:
+      // the `message.updated` cache is current even if this OpenCode process just loaded
+      // and never saw the turn land.
+      if (last.tokens > 0) lastTokens.set(sid, last.tokens);
       // An inline child (task tool) has a parentID and stops as a subagent, as in Claude Code. A lane started
       // in its own terminal is a top-level session and gets Stop: scope gates to roles with conditions (cwd).
       let parent = null;
@@ -1655,7 +1728,7 @@ export const KarenAI = async ({ directory, client }) => {
       // As in Claude Code, stop_hook_active is true on every Stop that follows a hold, so a gate
       // that exempts it holds a session only once; bound repeated holds with the gate's strike
       // state instead.
-      const out = await karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: holds.has(sid), stop_hold_count: holds.get(sid) ?? 0, last_assistant_message: last.text, ...todo, ...(parent ? { agent_id: sid } : {}) });
+      const out = await karen({ hook_event_name: parent ? "SubagentStop" : "Stop", session_id: sid, cwd: directory, stop_hook_active: holds.has(sid), stop_hold_count: holds.get(sid) ?? 0, last_assistant_message: last.text, ...todo, ...(parent ? { agent_id: sid } : {}), facts: await contextFacts(sid) });
       if (out.decision !== "block") {
         holds.delete(sid);
         const status = statusNotice(sid, out.systemMessage);
@@ -1680,7 +1753,7 @@ export const KarenAI = async ({ directory, client }) => {
       if (rules.get(sid)) output.system.push(rules.get(sid));
     },
     "tool.execute.before": async (input, output) => {
-      const out = await karen({ hook_event_name: "PreToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: output.args });
+      const out = await karen({ hook_event_name: "PreToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: output.args, facts: await contextFacts(input.sessionID) });
       if (out.modifiedInput && typeof out.modifiedInput === "object") {
         Object.assign(output.args, out.modifiedInput);
       } else {
@@ -1693,7 +1766,7 @@ export const KarenAI = async ({ directory, client }) => {
       if (message) notices.set(input.callID, message);
     },
     "tool.execute.after": async (input, output) => {
-      const out = await karen({ hook_event_name: "PostToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: input.args, tool_response: output.output });
+      const out = await karen({ hook_event_name: "PostToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: input.args, tool_response: output.output, facts: await contextFacts(input.sessionID) });
       const notes = [notices.get(input.callID), out.decision === "block" ? out.reason : null, notice(input.sessionID, out.systemMessage)].filter(Boolean);
       notices.delete(input.callID);
       if (notes.length) output.output = `${output.output ?? ""}\n\n[Karen-AI] ${notes.join("\n")}`;
