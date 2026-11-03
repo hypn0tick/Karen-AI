@@ -5,4 +5,6 @@
 #[cfg(test)]
 mod context;
 #[cfg(test)]
+mod provider_error;
+#[cfg(test)]
 mod session;

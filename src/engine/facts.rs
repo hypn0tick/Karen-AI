@@ -62,19 +62,7 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
     // variable the user never named.
     facts.remove("env");
     let runtime = runtime(&req.raw);
-    // `facts.env.<NAME>`: her own environment, and only the names the user
-    // layer allowlisted. A name not on the list is never read — not an error,
-    // not a warning, just a fact that stays absent. Unset or not UTF-8 is
-    // absent too; an empty value is a value, and reads as the empty string.
-    let mut env = Map::new();
-    for name in wanted.iter().filter_map(|f| f.strip_prefix("env.")) {
-        if !set.config.facts.env.iter().any(|allowed| allowed == name) {
-            continue;
-        }
-        if let Ok(value) = std::env::var(name) {
-            env.insert(name.to_string(), Value::from(value));
-        }
-    }
+    let env = env_facts(set, &wanted);
     if !env.is_empty() {
         facts.insert("env".into(), Value::Object(env));
     }
@@ -95,6 +83,19 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
             None
         };
     let want_ratio = wanted.contains("context_ratio");
+    // `facts.provider_error`: the provider's own last failure, whatever it said
+    // it broke on. Read only on the events a failure rides in with a transcript
+    // (Stop, ProviderError); a fact the runtime supplied (the OpenCode bridge)
+    // wins without her reading anything.
+    let want_error = wanted
+        .iter()
+        .any(|f| f == "provider_error" || f.starts_with("provider_error."))
+        && !facts.contains_key("provider_error");
+    if want_error {
+        if let Some(error) = transcript_error(&runtime, &req.raw) {
+            facts.insert("provider_error".into(), error);
+        }
+    }
     for name in wanted {
         if facts.contains_key(&name) {
             continue;
@@ -162,6 +163,23 @@ fn configured_window(set: &PolicySet, runtime: &str) -> Option<u64> {
         .map(|(_, window)| *window)
 }
 
+/// `facts.env`: her own environment, and only the names the user layer
+/// allowlisted. A name not on the list is never read — not an error, not a
+/// warning, just a fact that stays absent. Unset or not UTF-8 is absent too;
+/// an empty value is a value, and reads as the empty string.
+fn env_facts(set: &PolicySet, wanted: &BTreeSet<String>) -> Map<String, Value> {
+    let mut env = Map::new();
+    for name in wanted.iter().filter_map(|f| f.strip_prefix("env.")) {
+        if !set.config.facts.env.iter().any(|allowed| allowed == name) {
+            continue;
+        }
+        if let Ok(value) = std::env::var(name) {
+            env.insert(name.to_string(), Value::from(value));
+        }
+    }
+    env
+}
+
 /// `facts.context_ratio`: the latest turn's occupancy over the window it runs
 /// in, absent when either side is missing or the window is zero, because a
 /// ratio of nothing over nothing is noise, not a number.
@@ -176,6 +194,26 @@ fn transcript_path(raw: &Value) -> Option<&str> {
     raw.get("transcript_path")
         .and_then(Value::as_str)
         .filter(|path| !path.is_empty())
+}
+
+/// The provider's own last failure, from the transcript its runtime records —
+/// Claude Code's API-error entry, Codex's `error` event — absent when the
+/// runtime records none, or when a later assistant entry got through.
+fn transcript_error(runtime: &str, raw: &Value) -> Option<Value> {
+    if !matches!(runtime, "claude" | "codex") {
+        return None;
+    }
+    let path = transcript_path(raw)?;
+    let read = read_tail(
+        Path::new(path),
+        TAIL_START,
+        TAIL_MAX,
+        |line| match runtime {
+            "claude" => claude_error(line),
+            _ => codex_error(line),
+        },
+    );
+    read.flatten()
 }
 
 /// The last line `parse` accepts, reading the file's tail backwards in windows
@@ -251,6 +289,67 @@ fn codex_usage(line: &str) -> Option<(u64, Option<u64>)> {
         tokens,
         info.get("model_context_window").and_then(Value::as_u64),
     ))
+}
+
+/// One line of a transcript, as the provider's last word on its own health:
+/// `Some(Some(fact))` — this line failed, and here is what it said; `Some(None)`
+/// — this line is a later success, and the failure before it is stale;
+/// `None` — not a line that decides, keep reading backwards.
+type LastWord = Option<Option<Value>>;
+
+/// Claude Code's own apology, from the last assistant entry of its transcript:
+/// an `isApiErrorMessage` entry carries the provider's words in its content; a
+/// plain assistant entry after it means the call got through and the apology
+/// is stale. The entry's model travels with the message, as the entry carries it.
+fn claude_error(line: &str) -> LastWord {
+    let Ok(entry) = serde_json::from_str::<Value>(line) else {
+        return None;
+    };
+    if entry.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    if entry.get("isApiErrorMessage").and_then(Value::as_bool) != Some(true) {
+        return Some(None);
+    }
+    let message = entry
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+        .and_then(|parts| {
+            parts
+                .iter()
+                .find_map(|part| part.get("text").and_then(Value::as_str))
+        });
+    match message {
+        Some(message) => Some(Some(serde_json::json!({
+            "message": message,
+            "model": entry.get("message").and_then(|m| m.get("model")),
+        }))),
+        // An error entry whose words she cannot read: absent, never guessed.
+        None => Some(None),
+    }
+}
+
+/// Codex's last word, from its rollout (`EventMsg::Error` behind
+/// `RolloutItem::EventMsg`, `tag = "type"`, `content = "payload"` — shape
+/// verified against the codex-rs source, `codex-rs/protocol/src/protocol.rs`):
+/// an `error` event carries its message; an assistant response item after it
+/// means the call got through.
+fn codex_error(line: &str) -> LastWord {
+    let Ok(entry) = serde_json::from_str::<Value>(line) else {
+        return None;
+    };
+    let payload = entry.get("payload")?;
+    match payload.get("type").and_then(Value::as_str) {
+        Some("error") => {
+            let message = payload.get("message").and_then(Value::as_str);
+            message.map(|m| Some(serde_json::json!({ "message": m })))
+        }
+        Some("message") if payload.get("role").and_then(Value::as_str) == Some("assistant") => {
+            Some(None)
+        }
+        _ => None,
+    }
 }
 
 /// The runtime a payload came from: the `facts.runtime` its bridge supplied
