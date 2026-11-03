@@ -224,8 +224,12 @@ A gate can read what the session's runtime actually has instead of someone remem
 | `facts.context_tokens` | the latest assistant turn's input plus both cache counts | Claude Code: the tail of the transcript the hook names (read backwards, growing to 8 MiB, because the last usage line can sit behind megabytes of tool output); Codex: the rollout's last `token_count` event; OpenCode: the bridge's payload, from the `message.updated` events it caches |
 | `facts.context_window` | the window that turn runs in | Codex: the same rollout's `model_context_window`; OpenCode: the bridge's payload; Claude Code: `[facts.context_window]` in `config.toml`, keyed by runtime — one model id runs at several windows, so she reports a configured number rather than guessing one |
 | `facts.context_ratio` | `context_tokens` over `context_window` | both of the above; **absent when either side is** |
+| `facts.session_id` | the session's own id, as the payload said it | the payload itself; absent when the payload carries none |
+| `facts.env.<NAME>` | the environment variable's value, read from Karen's own environment | **only** the names the user layer allowlisted in `[facts] env` (`~/.karen/policies/config.toml`) |
 
-`runtime`, `mcp_servers` and `tools` are cached for the session; `git_uncommitted` and the occupancy facts are read fresh on every call that needs them. An unreadable fact is absent, never zero: a closed Codex rollout is zstd and she does not decompress it, a missing transcript says nothing, and a gate matching a numeric condition on an absent fact stays quiet. The ratio is what a gate names when it means "how full the window is":
+`runtime`, `mcp_servers` and `tools` are cached for the session; `git_uncommitted` and the occupancy facts are read fresh on every call that needs them. An unreadable fact is absent, never zero: a closed Codex rollout is zstd and she does not decompress it, a missing transcript says nothing, and a gate matching a numeric condition on an absent fact stays quiet.
+
+The env allowlist is the user layer's and no other's: a project layer that sets `[facts] env` is ignored, because a merge that unions the lists would let repository content expose a variable the user never named — `karen validate` names the layer that tried. A gate matching `facts.env.<NAME>` off the allowlist can never fire; `karen validate` names that gate too. A payload's own `facts.env` never reaches a gate, an unset variable reads as absent (never the empty string), and a value is never logged or written to state — it exists only in the request the gate reads. The ratio is what a gate names when it means "how full the window is":
 
 ```json
 {
@@ -413,6 +417,7 @@ backend = "auto"          # auto | memory | file
 
 [facts]
 tools = ["git", "rg", "sd", "yq", "jq", "shellcheck", "ast-grep", "difft", "uv", "node", "bun", "cargo"]  # what `facts.tools` reports, by name
+env = ["HCOM_INSTANCE"]  # the only variables `facts.env.<NAME>` may read — the USER layer's list; a project layer's is ignored
 
 [facts.context_window]
 # The window she reports when the runtime does not report its own, keyed by
@@ -493,7 +498,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-236 tests passing (35 unit, 20 integration, 181 e2e — zero ignored). The Karen
+243 tests passing (35 unit, 20 integration, 188 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

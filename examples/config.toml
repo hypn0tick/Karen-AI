@@ -43,6 +43,13 @@ stale_temp_age_hours = 24
 [facts]
 # The binaries `facts.tools` reports as present on `PATH`, by name.
 tools = ["git", "rg", "sd", "yq", "jq", "shellcheck", "ast-grep", "difft", "uv", "node", "bun", "cargo"]
+# The ONLY environment variables `facts.env.<NAME>` may read. This list is
+# read from the user layer alone: a project layer that sets it is ignored and
+# named by `karen validate`, because repository content never names what she
+# may read. A gate matching a variable off this list can never fire, and
+# `karen validate` names that gate too. The Karen who reads off a list the
+# user wrote, in the user's handwriting, and no one else's.
+env = []
 
 [facts.context_window]
 # The context window she reports for `facts.context_window` when the runtime
