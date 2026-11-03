@@ -26,6 +26,8 @@ const TAIL_MAX: u64 = 8 * 1024 * 1024;
 
 /// Adds every referenced fact to `req.raw["facts"]`.
 pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) {
+    // The full path after `facts.` is kept, so `env.<NAME>` names the one
+    // variable it reads; the single-segment facts match their own arms below.
     let mut wanted: BTreeSet<String> = set
         .gates
         .iter()
@@ -38,7 +40,7 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
                 .chain(g.state.as_ref().and_then(|s| s.field.as_deref()))
         })
         .filter_map(|f| f.strip_prefix("facts."))
-        .map(|f| f.split('.').next().unwrap_or(f).to_string())
+        .map(str::to_string)
         .collect();
     // The ratio is read from the two facts it divides: a gate that names it
     // asks for both, whichever of the three it matches on.
@@ -55,7 +57,27 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    // `env` is never a payload fact: the allowlist over her own environment is
+    // its only source, so nothing a bridge hands her can reach a gate as a
+    // variable the user never named.
+    facts.remove("env");
     let runtime = runtime(&req.raw);
+    // `facts.env.<NAME>`: her own environment, and only the names the user
+    // layer allowlisted. A name not on the list is never read — not an error,
+    // not a warning, just a fact that stays absent. Unset or not UTF-8 is
+    // absent too; an empty value is a value, and reads as the empty string.
+    let mut env = Map::new();
+    for name in wanted.iter().filter_map(|f| f.strip_prefix("env.")) {
+        if !set.config.facts.env.iter().any(|allowed| allowed == name) {
+            continue;
+        }
+        if let Ok(value) = std::env::var(name) {
+            env.insert(name.to_string(), Value::from(value));
+        }
+    }
+    if !env.is_empty() {
+        facts.insert("env".into(), Value::Object(env));
+    }
     // The occupancy of the latest turn, read once for both facts that share
     // it. Only Claude Code and Codex record it in a transcript she can read; a
     // runtime that supplies its own facts (the OpenCode bridge) wins without
@@ -92,6 +114,13 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
             "mcp_servers" => Some(Value::from(join(mcp_servers(&runtime, req.cwd.as_deref())))),
             "tools" => Some(Value::from(join(tools_on_path(&set.config.facts.tools)))),
             "git_uncommitted" => Some(Value::from(git_uncommitted(req.cwd.as_deref()))),
+            // The session's own id, as the runtime said it: the payload's word,
+            // absent when the payload carries none.
+            "session_id" => req
+                .raw
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(Value::from),
             "context_tokens" => latest_turn.map(|(tokens, _)| Value::from(tokens)),
             "context_window" => latest_turn
                 .and_then(|(_, window)| window)

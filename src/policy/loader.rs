@@ -21,7 +21,11 @@ pub struct Config {
 }
 
 /// What the environment facts look for. `tools` names the binaries `facts.tools`
-/// reports as present on `PATH`.
+/// reports as present on `PATH`; `env` names the only environment variables
+/// `facts.env.<NAME>` may read, and only the user layer's list counts —
+/// `karen validate` reports a project layer that sets it, because a project's
+/// config is repository content, and a repository that adds a name would hand
+/// a gate in it a variable the user never named.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FactsConfig {
@@ -34,6 +38,10 @@ pub struct FactsConfig {
     /// A window the runtime reports itself always wins over this.
     #[serde(default)]
     pub context_window: HashMap<String, u64>,
+    /// The only environment variables `facts.env.<NAME>` may read. The user
+    /// layer's list; a project layer's list is ignored and reported.
+    #[serde(default)]
+    pub env: Vec<String>,
 }
 
 impl Default for FactsConfig {
@@ -41,6 +49,7 @@ impl Default for FactsConfig {
         Self {
             tools: default_fact_tools(),
             context_window: HashMap::new(),
+            env: Vec::new(),
         }
     }
 }
@@ -688,12 +697,29 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
     let mut last = Layer::Builtin;
     let mut changes = Vec::new();
     let mut roots = Vec::new();
+    let mut user_env: Vec<String> = Vec::new();
 
     for files in layers {
         let layer = files.layer;
         last = layer;
         if let Some(root) = files.root {
             roots.push((layer, root));
+        }
+        // The env allowlist is the user layer's and no other's, so it is
+        // captured before the tables merge: a merge that unions the lists
+        // would let repository content name a variable the user never did.
+        let env = env_names(&files.table);
+        if matches!(layer, Layer::User) {
+            user_env = env;
+        } else if !env.is_empty() {
+            issues.push(MergeIssue {
+                layer,
+                message: format!(
+                    "sets [facts] env ({}) — only the user layer's list is read, this one is ignored",
+                    env.join(", ")
+                ),
+                kind: IssueKind::Warning,
+            });
         }
         merge_tables(&mut table, files.table);
         let mut merged = Merged {
@@ -714,9 +740,32 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
     }
 
     gates.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
+    // A gate naming a variable the user layer never allowlisted matches
+    // nothing, forever: the fact stays absent, and a gate that can never fire
+    // is a silent no-op nobody knows is off duty. She names it at the border.
+    for gate in &gates {
+        let off: Vec<&str> = gate
+            .matcher
+            .fields()
+            .chain(gate.state.as_ref().and_then(|s| s.field.as_deref()))
+            .filter_map(|field| field.strip_prefix("facts.env."))
+            .filter(|name| !user_env.iter().any(|allowed| allowed == name))
+            .collect();
+        if !off.is_empty() {
+            issues.push(MergeIssue {
+                layer: gate.layer,
+                message: format!(
+                    "`{}` matches facts.env.{} not on the user layer's allowlist — the fact stays absent",
+                    gate.id,
+                    off.join(", ")
+                ),
+                kind: IssueKind::Warning,
+            });
+        }
+    }
     // Each layer's sections deserialized alone; a merge that still does not
     // keeps the defaults rather than dropping a single gate.
-    let config = config_from(&table, &primary).unwrap_or_else(|error| {
+    let mut config = config_from(&table, &primary).unwrap_or_else(|error| {
         issues.push(MergeIssue {
             layer: last,
             message: format!("skips the merged config: {error}"),
@@ -724,6 +773,9 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
         });
         Config::default()
     });
+    // The allowlist she reads is the user layer's alone, whatever the merged
+    // tables carried: repository content never names what she may read.
+    config.facts.env = user_env;
     PolicySet {
         gates,
         rules,
@@ -734,6 +786,21 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
         issues,
         changes,
     }
+}
+
+/// The `[facts] env` names one layer's own table lists, before any merge.
+fn env_names(table: &toml::Table) -> Vec<String> {
+    table
+        .get("facts")
+        .and_then(|facts| facts.get("env"))
+        .and_then(toml::Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(|name| name.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The gates merged so far, and where one layer's changes to them are recorded.

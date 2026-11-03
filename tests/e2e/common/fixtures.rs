@@ -437,8 +437,21 @@ impl TestEnv {
 
     /// Run karen evaluate with stdin request (with `KAREN_DEV=1`)
     pub fn run_evaluate_stdin(&self, input: &str, args: &[&str]) -> (i32, String, String) {
+        self.run_evaluate_stdin_with_env(input, args, &[])
+    }
+
+    /// Run karen evaluate with stdin request and extra variables in the
+    /// child's environment, so a test can hand the binary an environment
+    /// without touching the test process's own.
+    pub fn run_evaluate_stdin_with_env(
+        &self,
+        input: &str,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> (i32, String, String) {
         let mut cmd = self.karen_cmd_dev(&["evaluate", "--request", "-"]);
         cmd.args(args)
+            .envs(envs.iter().copied())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

@@ -4,3 +4,5 @@
 
 #[cfg(test)]
 mod context;
+#[cfg(test)]
+mod session;
