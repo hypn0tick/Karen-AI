@@ -130,6 +130,19 @@ pub enum ConditionDef {
         field: String,
         pattern: String,
     },
+    /// The field's number is at least `value`. Absence is not a number: a
+    /// missing field, or one that is not numeric, never matches. The Karen who
+    /// reads the meter before she quotes the ordinance.
+    FieldGte {
+        field: String,
+        value: f64,
+    },
+    /// The field's number is at most `value`, with [`ConditionDef::FieldGte`]'s
+    /// stand on absence.
+    FieldLte {
+        field: String,
+        value: f64,
+    },
     /// Matches when the file at `path` is missing or was last modified more
     /// than `seconds` ago. `~/` expands to the home directory; a relative path
     /// resolves against the payload's `cwd`.
@@ -268,6 +281,8 @@ enum Condition {
     FieldEquals(String, serde_json::Value),
     FieldRegex(String, LazyRegex),
     FieldJsonRegex(String, LazyRegex),
+    FieldGte(String, f64),
+    FieldLte(String, f64),
     FileOlderThan(String, u64),
     Always,
 }
@@ -285,6 +300,8 @@ impl Condition {
             | Self::FieldJsonRegex(_, re) => Some(re),
             Self::CommandContains(_)
             | Self::FieldEquals(..)
+            | Self::FieldGte(..)
+            | Self::FieldLte(..)
             | Self::FileOlderThan(..)
             | Self::Always => None,
         }
@@ -336,6 +353,8 @@ impl Gate {
             ConditionDef::FieldJsonRegex { field, pattern } => {
                 Condition::FieldJsonRegex(field, LazyRegex::new(pattern))
             }
+            ConditionDef::FieldGte { field, value } => Condition::FieldGte(field, value),
+            ConditionDef::FieldLte { field, value } => Condition::FieldLte(field, value),
             ConditionDef::FileOlderThan { path, seconds } => {
                 Condition::FileOlderThan(path, seconds)
             }
@@ -418,12 +437,14 @@ impl Matcher {
         self.all.iter().chain(&self.any).chain(&self.none)
     }
 
-    /// Every payload field a `field_equals`, `field_regex` or `field_json_regex` condition reads.
+    /// Every payload field a `field_*` condition reads.
     pub fn fields(&self) -> impl Iterator<Item = &str> {
         self.conditions().filter_map(|c| match c {
             Condition::FieldEquals(field, _)
             | Condition::FieldRegex(field, _)
-            | Condition::FieldJsonRegex(field, _) => Some(field.as_str()),
+            | Condition::FieldJsonRegex(field, _)
+            | Condition::FieldGte(field, _)
+            | Condition::FieldLte(field, _) => Some(field.as_str()),
             _ => None,
         })
     }
@@ -491,6 +512,15 @@ impl Condition {
                     None => re.is_match(&v.to_string()),
                 })
             }
+            // A number compared, not read: the field is absent or not numeric
+            // and there is nothing to compare, so the condition never matches.
+            // Absence is not a number, and she does not round one up to zero.
+            Self::FieldGte(field, value) => lookup(req, field)
+                .and_then(serde_json::Value::as_f64)
+                .is_some_and(|number| number >= *value),
+            Self::FieldLte(field, value) => lookup(req, field)
+                .and_then(serde_json::Value::as_f64)
+                .is_some_and(|number| number <= *value),
             // A timer without a clock: the file's age is the clock, so a gate can say
             // "due again" by watching a marker that the finished chore touches. The
             // Karen who checks when you last did it, not whether you promised to.

@@ -7,3 +7,5 @@ mod gates;
 mod layers;
 #[cfg(test)]
 mod loading;
+#[cfg(test)]
+mod matchers;

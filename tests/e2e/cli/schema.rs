@@ -56,6 +56,17 @@ fn karen_schema_includes_types() {
             .unwrap()
             .contains(&"claude-classic".into())
     );
+    // The numeric conditions are vocabulary a gate can quote, so the schema
+    // must be able to say them back.
+    for condition in ["field_gte", "field_lte"] {
+        assert!(
+            types["conditions"]
+                .as_array()
+                .unwrap()
+                .contains(&condition.into()),
+            "schema must list {condition}"
+        );
+    }
 }
 
 #[test]
