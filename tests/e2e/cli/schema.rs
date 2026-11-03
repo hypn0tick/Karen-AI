@@ -44,6 +44,14 @@ fn karen_schema_includes_types() {
     assert!(types["exit_codes"].is_object());
     // Check specific values
     assert!(types["events"].as_array().unwrap().len() >= 11);
+    // The provider's own failure is an event a gate can be written for.
+    assert!(
+        types["events"]
+            .as_array()
+            .unwrap()
+            .contains(&"ProviderError".into()),
+        "schema must list the ProviderError event"
+    );
     assert!(
         types["adapters"]
             .as_array()

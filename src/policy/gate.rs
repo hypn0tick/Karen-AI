@@ -589,6 +589,7 @@ pub fn event_name(event: &Event) -> String {
         Event::SubagentStop => "SubagentStop".into(),
         Event::Stop => "Stop".into(),
         Event::Notification => "Notification".into(),
+        Event::ProviderError => "ProviderError".into(),
         Event::Virtual(v) => format!("Virtual{v:?}"),
     }
 }
@@ -606,6 +607,7 @@ fn validate_event(event: &str) -> Result<(), ()> {
         "SubagentStop",
         "Stop",
         "Notification",
+        "ProviderError",
     ];
     if KNOWN.iter().any(|k| k.eq_ignore_ascii_case(event)) {
         Ok(())

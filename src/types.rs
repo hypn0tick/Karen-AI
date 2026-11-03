@@ -18,6 +18,10 @@ pub enum Event {
     SubagentStop,
     Stop,
     Notification,
+    /// The provider call itself failed (the timeout, the 529, the overload) —
+    /// not the agent's work, the pipe it came through. The Karen who reads the
+    /// apology the phone company sends, and files it under what actually broke.
+    ProviderError,
     Virtual(VirtualEvent),
 }
 

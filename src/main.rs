@@ -1130,6 +1130,7 @@ fn event_names() -> Value {
         "SubagentStop",
         "Stop",
         "Notification",
+        "ProviderError",
     ])
 }
 

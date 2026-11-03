@@ -34,6 +34,7 @@ impl RuntimeAdapter for ClaudeClassic {
             "SubagentStop" => Event::SubagentStop,
             "Stop" => Event::Stop,
             "Notification" => Event::Notification,
+            "ProviderError" => Event::ProviderError,
             other => return Err(AdapterError::UnknownEvent(other.to_string())),
         };
 
