@@ -33,7 +33,7 @@ Gates are merged by `id`, layer by layer.
 3. **Disable.** A layer's `config.toml` lists `disable = ["gate-id", ...]` by exact id. An id that matches nothing is a warning.
 4. **Lock.** A gate with `"locked": true` cannot be replaced or disabled by a later layer. At hook time the offending override or disable is dropped, the locked gate stays enforced, and the session sees a warning; `karen validate` reports it as an error. A lock violation never becomes a load failure.
 5. **Rules.** Each layer's rule files are injected in layer order. A rule is named by its path under `rules/` without the extension (`rules/claude/style.md` is `claude/style`): a later layer's rule at the same path replaces the earlier one, and rules of one layer never replace each other.
-6. **Config.** A later layer wins per key; list values (`facts.tools`) are unioned.
+6. **Config.** A later layer wins per key, nested tables included (`[facts.context_window]` merges per runtime name); list values (`facts.tools`) are unioned.
 
 ## Broken files
 

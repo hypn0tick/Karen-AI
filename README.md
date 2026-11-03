@@ -206,12 +206,14 @@ The Karen who decides. Four answers: `allow`, `deny`, `ask`, `modify`. No `maybe
 | `field_equals`      | Exact match on `tool_input.<field>`, else the top-level payload field (Stop's `stop_hook_active`); `.` walks nested keys (`tool_response.stdout`) | demands precision    |
 | `field_regex`       | Regex against the same field, strings only (Stop's `last_assistant_message`, PostToolUse's `tool_response.stdout`) | reads your closing statement |
 | `field_json_regex`  | Regex against any field: a string as itself, anything else as compact JSON (Stop's `background_tasks`: `"status":"running"`) | reads the fine print too |
+| `field_gte`         | The field's number is at least `value`; a field that is absent or not numeric never matches, because absence is not a number | reads the meter |
+| `field_lte`         | The field's number is at most `value`, with `field_gte`'s stand on absence | reads the meter from the other side |
 | `file_older_than`   | The file at `path` is missing or was last modified more than `seconds` ago (`~/` is home; relative paths resolve against `cwd`), so a marker the finished chore touches makes a gate "due again" | checks when you last did it |
 | `always`            | Matches everything                   | doesn't miss a thing |
 
 ### Environment facts
 
-A gate can read what the session's runtime actually has instead of someone remembering it, through `field_equals` or `field_regex` on `facts.<name>`. She collects a fact only when a gate that applies to the current event names it, and a fact the runtime already put in the payload wins.
+A gate can read what the session's runtime actually has instead of someone remembering it, through a `field_*` matcher on `facts.<name>`. She collects a fact only when a gate that applies to the current event names it, and a fact the runtime already put in the payload wins.
 
 | Fact | Value | Source |
 |------|-------|--------|
@@ -219,8 +221,44 @@ A gate can read what the session's runtime actually has instead of someone remem
 | `facts.mcp_servers` | comma-separated names of the enabled MCP servers | the runtime's own config files (Claude Code: `.claude.json` in `CLAUDE_CONFIG_DIR`, else `~/.claude.json`, the project's `.mcp.json`, and the plugins its settings enable; Codex: `config.toml` in `CODEX_HOME`, else `~/.codex`; OpenCode: `opencode.json` or `opencode.jsonc` in its global directory (`$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`), the project, `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR`). Names only: server definitions can hold keys, and a gate never needs them |
 | `facts.tools` | comma-separated names from `[facts] tools` found on `PATH` | `PATH` |
 | `facts.git_uncommitted` | `git status --porcelain` for `cwd`, first 50 lines | git |
+| `facts.context_tokens` | the latest assistant turn's input plus both cache counts | Claude Code: the tail of the transcript the hook names (read backwards, growing to 8 MiB, because the last usage line can sit behind megabytes of tool output); Codex: the rollout's last `token_count` event; OpenCode: the bridge's payload, from the `message.updated` events it caches |
+| `facts.context_window` | the window that turn runs in | Codex: the same rollout's `model_context_window`; OpenCode: the bridge's payload; Claude Code: `[facts.context_window]` in `config.toml`, keyed by runtime — one model id runs at several windows, so she reports a configured number rather than guessing one |
+| `facts.context_ratio` | `context_tokens` over `context_window` | both of the above; **absent when either side is** |
 
-`runtime`, `mcp_servers` and `tools` are cached for the session; `git_uncommitted` is read on every call that needs it. A gate that should only exist where a server does, for example:
+`runtime`, `mcp_servers` and `tools` are cached for the session; `git_uncommitted` and the occupancy facts are read fresh on every call that needs them. An unreadable fact is absent, never zero: a closed Codex rollout is zstd and she does not decompress it, a missing transcript says nothing, and a gate matching a numeric condition on an absent fact stays quiet. The ratio is what a gate names when it means "how full the window is":
+
+```json
+{
+  "id": "prepare-for-compaction",
+  "description": "Nudge the agent to compact before the window fills.",
+  "event": "UserPromptSubmit",
+  "match": { "all": [ { "type": "field_gte", "field": "facts.context_ratio", "value": 0.85 } ] },
+  "action": {
+    "type": "deny_once_then_warn",
+    "first_reason": "The window is 85% full. Run /compact now, before the next turn does it for you mid-thought.",
+    "second_reason": "Allowing this one, but the window was 85% full when you sent it."
+  },
+  "state": { "key": "nudged-compaction", "reset_on_compact": true }
+}
+```
+
+A gate that should fire once per filling, not once per call, latches (see [State](#state-deny_once_then_warn)); the OpenCode one tells the agent to call its `compress` tool on the work it finished, naming what to keep:
+
+```json
+{
+  "id": "compress-finished-work",
+  "description": "Hold the stop when the window is filling, until the agent compresses.",
+  "event": "Stop",
+  "match": { "all": [ { "type": "field_gte", "field": "facts.context_ratio", "value": 0.4 } ] },
+  "action": {
+    "type": "deny",
+    "reason": "The window is 40% full. Call the compress tool on the work this session finished — name the files and decisions to keep in the summary — then try this stop again."
+  },
+  "state": { "key": "latch:compress", "field": "facts.context_ratio", "rearm_below": 0.3 }
+}
+```
+
+Back to facts that gate existence rather than occupancy: a gate that should only exist where a server does, for example:
 
 ```json
 { "type": "field_regex", "field": "facts.mcp_servers", "pattern": "(^|,)brave-search(,|$)" }
@@ -256,6 +294,20 @@ A gate can read what the session's runtime actually has instead of someone remem
 The Karen who remembers. Strike one: denied, with an explanation and a lecture. Strike two: allowed, with the shorter explanation and a nudge toward the right tool — she has made her point, and repeating herself is what the manager is for. Strike three: there is no third strike. She has already moved on. (She already called your manager.) Add `"reset_on_compact": true` to the state and a compaction wipes the slate for that key: a nudge that taught something the compaction then dropped gets to teach it once more, so "once per session" becomes "once per context". `"track"` says what the count belongs to: `"session"` (the default) teaches once per session, and `"input"` counts each distinct tool input on its own, so every new command is held once and the same command retried goes through with the warning, which suits a check the agent has to confirm per call (a heredoc full of backslashes) rather than learn once. An input-tracked count is not wiped by `reset_on_compact`.
 
 **Stop gates that hold more than once.** A held Stop comes back with `stop_hook_active: true` on every later Stop of that turn (Claude Code sets it natively; the OpenCode bridge sets it the same way), so a Stop gate whose `none` exempts `stop_hook_active` holds a session exactly once and lets every later idle through. To keep holding until the agent states what the gate wants, leave that exemption out and bound the loop with the gate's own state: `deny_once_then_warn` with `max_strikes` set to the number of holds you allow, plus `reset_on_compact` to refill the budget after a compaction. The Karen who keeps asking, counts how often she asked, and knows when asking again stops helping.
+
+**Latches: fire once per filling.** A state spec with `field` and `rearm_below` together is a latch — it works with any action. The gate fires, the key arms, and every later matching call is held quiet until the `field` falls back below `rearm_below`:
+
+```json
+{
+  "state": {
+    "key": "latch:compress",
+    "field": "facts.context_ratio",
+    "rearm_below": 0.3
+  }
+}
+```
+
+The re-arm is checked on every dispatch, matched or not — a gate that fires at 40% occupancy can never match below 30%, so a latch that waited for its own match to clear would stay shut for good. The field dipping below the line clears it, climbing back over the gate's bar fires again, and `reset_on_compact` clears it as ever, because a compaction is the window emptying. The armed value is a timestamp, so the ledger says when the gate last fired, not just that it did. The Karen who trips the breaker once per overload, not once per sneeze.
 
 ---
 
@@ -358,6 +410,15 @@ gates_dir = "gates"
 [state]
 backend = "auto"          # auto | memory | file
 # file_dir = "~/.karen/state"  # the default; The Karen who remembers
+
+[facts]
+tools = ["git", "rg", "sd", "yq", "jq", "shellcheck", "ast-grep", "difft", "uv", "node", "bun", "cargo"]  # what `facts.tools` reports, by name
+
+[facts.context_window]
+# The window she reports when the runtime does not report its own, keyed by
+# runtime so one runtime's number never answers for another's model. A window
+# the runtime reports (Codex's rollout, the OpenCode bridge) always wins.
+claude = 200000
 ```
 
 ---
@@ -432,7 +493,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-203 tests passing (27 unit, 20 integration, 156 e2e — zero ignored). The Karen
+236 tests passing (35 unit, 20 integration, 181 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

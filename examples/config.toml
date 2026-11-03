@@ -39,3 +39,16 @@ stale_temp_prefixes = []
 # Untouched for a day means gone. No, "I was going to get to it" does
 # not count as touching.
 stale_temp_age_hours = 24
+
+[facts]
+# The binaries `facts.tools` reports as present on `PATH`, by name.
+tools = ["git", "rg", "sd", "yq", "jq", "shellcheck", "ast-grep", "difft", "uv", "node", "bun", "cargo"]
+
+[facts.context_window]
+# The context window she reports for `facts.context_window` when the runtime
+# does not report its own, keyed by runtime name: one runtime's number never
+# answers for another's model. Codex reads it from its rollout and OpenCode's
+# bridge supplies it, so they never need an entry; Claude Code reports nothing,
+# so without an entry `facts.context_ratio` is absent and a gate on it stays
+# quiet. The Karen who quotes a configured number, never a guessed one.
+claude = 200000
