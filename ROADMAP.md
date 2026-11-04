@@ -14,6 +14,16 @@ A flexible syntax over a semantic layer, such that **no unique abstraction ever 
 
 *She has already announced that when it ships, she intends to pretend she's been using it for years. She would like that noted in the file. Noted.*
 
+## Priority — She stands alone (no hcom underneath)
+
+Karen enforces policy on whatever runtime you run; she does not need a particular messenger, multiplexer or orchestration tool to do it. hcom is a separate tool some owners use beside her. It is something she guards like any other command, and never something she leans on.
+
+- **Scope:** almost a rewrite of the delivery side. The terminal layer is `karen run <runtime>` (the pseudo-terminal she owns) plus the console-attach probe for a session she did not start, and nothing else: no hcom backend, no `hcom term`/`hcom term inject`, no `hcom events`/`hcom listen` waits, no session identity read from a messenger's environment variable. A lane that an orchestration tool opens runs `karen run <runtime>` inside that tool's terminal, so she owns the session's terminal while the other tool owns only the window. Idle detection reads the screen buffer she already holds; nothing waits by starting a process per check. Every child process she starts on Windows starts without a console window (the hosted runtime's own pseudo-console excepted), with a test that counts windows and spawns.
+- **Origin:** Phase 4 grew an hcom backend because sessions launched by hcom sit in hcom's terminal. A test of that backend waited on a busy session by starting a fake hcom about once a second, and each start opened a console window on the owner's desktop until the machine was nearly unusable. The owner's ruling: she does not rely on hcom, and removing the dependency is a priority of its own, not a Phase 4 patch.
+- **Status:** priority, next after Phase 4. Phase 4 keeps `karen run` and drops its hcom backend work.
+
+*She would like it recorded that she was never dependent on anyone. The file records that she is about to be.*
+
 ## Runtime monkey-patch generator
 
 Extend runtimes past whatever their own developers felt like expending the effort to allow. **Status:** audited design direction. The dependencies are cited — not by her. She doesn't do research; she's why research gets done.
