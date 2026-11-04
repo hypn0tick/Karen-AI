@@ -383,3 +383,234 @@ fn karen_ignores_a_commands_description_when_counting_input_strikes() {
         Some("filed once"),
     );
 }
+
+/// A deny-once gate on the `Bash`/`hold` command whose strike keys on `fields`.
+fn key_fields_gate(id: &str, tool: &str, track: &str, fields: &str) -> &'static str {
+    // Fixtures hold `&'static str`; a test process may leak a few lines of JSON.
+    Box::leak(format!(
+        r#"{{ "id": "{id}", "event": "PreToolUse", "tool": "{tool}",
+        "match": {{ "all": [ {{ "type": "always" }} ] }},
+        "action": {{ "type": "deny_once_then_warn", "first_reason": "held once", "second_reason": "retry passes" }},
+        "state": {{ "track": "{track}", "key": "{id}", "key_fields": {fields} }} }}"#
+    )
+    .into_boxed_str())
+}
+
+fn key_fields_env(gate: &'static str) -> TestEnv {
+    TestEnv::with_config(
+        FILE_CONFIG,
+        &[crate::e2e::common::fixtures::GateFixture {
+            file: "key-fields.json",
+            content: gate,
+        }],
+        &[],
+    )
+}
+
+fn call(env: &TestEnv, session: &str, tool: &str, tool_input: serde_json::Value) -> String {
+    let mut input =
+        json!({ "hook_event_name": "PreToolUse", "session_id": session, "tool_name": tool });
+    input["tool_input"] = tool_input;
+    let (code, stdout, _) = env.run_hook(&input.to_string(), &[]);
+    assert_exit_code(code, 0);
+    stdout
+}
+
+#[test]
+#[serial]
+fn karen_keys_a_strike_on_exactly_the_fields_the_gate_lists() {
+    // The gate author knows what "the same input" is: here, the command. A
+    // new description and a new timeout are the same kill, retried.
+    let env = key_fields_env(key_fields_gate("kill", "Bash", "input", r#"["command"]"#));
+    let run = |tool_input| call(&env, "key-fields-command", "Bash", tool_input);
+
+    assert_hook_deny_once_first(
+        &run(json!({ "command": "hcom kill zed", "description": "stop zed" })),
+        Some("held once"),
+    );
+    assert_hook_warned_retry(
+        &run(json!({ "command": "hcom kill zed", "description": "end zed", "timeout": 9000 })),
+        Some("retry passes"),
+    );
+    // A different command is a different input.
+    assert_hook_deny_once_first(
+        &run(json!({ "command": "hcom kill abe", "description": "stop zed" })),
+        Some("held once"),
+    );
+}
+
+#[test]
+#[serial]
+fn karen_keys_a_non_shell_strike_on_a_listed_description() {
+    // `description` is the payload of an issue tracker's call; listing it
+    // keys the strike on it and nothing else, so the title may change.
+    let env = key_fields_env(key_fields_gate(
+        "tracker",
+        "create_issue",
+        "input",
+        r#"["description"]"#,
+    ));
+    let run = |tool_input| call(&env, "key-fields-description", "create_issue", tool_input);
+
+    assert_hook_deny_once_first(
+        &run(json!({ "title": "bug", "description": "first" })),
+        Some("held once"),
+    );
+    assert_hook_warned_retry(
+        &run(json!({ "title": "another title", "description": "first" })),
+        Some("retry passes"),
+    );
+    assert_hook_deny_once_first(
+        &run(json!({ "title": "bug", "description": "second" })),
+        Some("held once"),
+    );
+}
+
+#[test]
+#[serial]
+fn karen_hashes_a_missing_listed_field_apart_from_an_empty_one() {
+    // Absence is never a value: a call that left `note` out and one that sent
+    // `note: ""` or `note: null` are three different inputs.
+    let env = key_fields_env(key_fields_gate("note", "Bash", "input", r#"["note"]"#));
+    let run = |tool_input| call(&env, "key-fields-absent", "Bash", tool_input);
+
+    assert_hook_deny_once_first(&run(json!({ "command": "x" })), Some("held once"));
+    assert_hook_deny_once_first(
+        &run(json!({ "command": "x", "note": "" })),
+        Some("held once"),
+    );
+    assert_hook_deny_once_first(
+        &run(json!({ "command": "x", "note": null })),
+        Some("held once"),
+    );
+    // Each of the three is remembered as its own input.
+    assert_hook_warned_retry(&run(json!({ "command": "y" })), Some("retry passes"));
+    assert_hook_warned_retry(
+        &run(json!({ "command": "y", "note": "" })),
+        Some("retry passes"),
+    );
+}
+
+#[test]
+#[serial]
+fn karen_resolves_a_listed_path_through_nested_tool_input() {
+    let env = key_fields_env(key_fields_gate(
+        "nested",
+        "deploy",
+        "input",
+        r#"["options.target"]"#,
+    ));
+    let run = |tool_input| call(&env, "key-fields-nested", "deploy", tool_input);
+
+    assert_hook_deny_once_first(
+        &run(json!({ "options": { "target": "prod", "dry": true } })),
+        Some("held once"),
+    );
+    assert_hook_warned_retry(
+        &run(json!({ "options": { "target": "prod", "dry": false } })),
+        Some("retry passes"),
+    );
+    assert_hook_deny_once_first(
+        &run(json!({ "options": { "target": "staging" } })),
+        Some("held once"),
+    );
+}
+
+#[test]
+#[serial]
+fn karen_validate_warns_about_key_fields_without_input_tracking() {
+    let stray = key_fields_gate("stray", "Bash", "session", r#"["command"]"#);
+    let fine = key_fields_gate("fine", "Bash", "input", r#"["command"]"#);
+    let env = TestEnv::with_config(
+        FILE_CONFIG,
+        &[
+            crate::e2e::common::fixtures::GateFixture {
+                file: "stray.json",
+                content: stray,
+            },
+            crate::e2e::common::fixtures::GateFixture {
+                file: "fine.json",
+                content: fine,
+            },
+        ],
+        &[],
+    );
+    let (code, stdout, _) = env.run_karen(&["validate", "--json"]);
+    // A warning does not fail the policy.
+    assert_exit_code(code, 0);
+    let data = crate::e2e::common::assert_json_ok(&stdout);
+    let issues = data["issues"].as_array().expect("issues array");
+    assert!(
+        issues.iter().any(|i| {
+            i["kind"] == "warning"
+                && i["message"].as_str().is_some_and(|m| {
+                    m.contains("`stray`") && m.contains("key_fields") && m.contains("track")
+                })
+        }),
+        "validate must name the gate whose key_fields is dead text: {issues:?}"
+    );
+    // The input-tracked gate's list is in force, so it is not named.
+    assert!(
+        !issues
+            .iter()
+            .any(|i| i["message"].as_str().is_some_and(|m| m.contains("`fine`"))),
+        "a key_fields on track \"input\" is not dead text: {issues:?}"
+    );
+}
+
+#[test]
+#[serial]
+fn karen_refuses_an_empty_key_fields_and_keeps_every_other_gate() {
+    let empty = key_fields_gate("hollow", "Bash", "input", "[]");
+    let blank = key_fields_gate("blank", "Bash", "input", r#"["command", " "]"#);
+    let sturdy = r#"{ "id": "sturdy", "event": "PreToolUse", "tool": "Bash",
+        "match": { "all": [ { "type": "command_contains", "value": "still-enforced" } ] },
+        "action": { "type": "deny", "reason": "sturdy holds" } }"#;
+    let env = TestEnv::with_config(
+        FILE_CONFIG,
+        &[
+            crate::e2e::common::fixtures::GateFixture {
+                file: "hollow.json",
+                content: empty,
+            },
+            crate::e2e::common::fixtures::GateFixture {
+                file: "blank.json",
+                content: blank,
+            },
+            crate::e2e::common::fixtures::GateFixture {
+                file: "sturdy.json",
+                content: sturdy,
+            },
+        ],
+        &[],
+    );
+    let (code, stdout, _) = env.run_karen(&["validate", "--json"]);
+    assert_ne!(code, 0, "an empty key_fields is a load error: {stdout}");
+    assert!(
+        stdout.contains("hollow"),
+        "validate names the gate: {stdout}"
+    );
+    assert!(
+        stdout.contains("blank"),
+        "validate names the gate: {stdout}"
+    );
+
+    // The refused gates stay out; the rest of the policy is still enforced.
+    let held = call(
+        &env,
+        "key-fields-refused",
+        "Bash",
+        json!({ "command": "still-enforced" }),
+    );
+    assert_hook_deny(&held, Some("sturdy holds"));
+    let quiet = call(
+        &env,
+        "key-fields-refused",
+        "Bash",
+        json!({ "command": "echo ok" }),
+    );
+    assert!(
+        !quiet.contains("held once"),
+        "a refused gate never fires: {quiet}"
+    );
+}

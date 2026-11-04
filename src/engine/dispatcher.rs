@@ -245,10 +245,7 @@ impl Engine {
                 let key = spec.map_or(gate.id.as_str(), |s| s.key.as_str());
                 let key = match spec.map(|s| s.track) {
                     Some(crate::policy::gate::Track::Input) => {
-                        format!(
-                            "{key}:{:016x}",
-                            fnv1a(strike_input(req.raw.get("tool_input")).as_ref())
-                        )
+                        format!("{key}:{:016x}", input_key(spec, req))
                     }
                     _ => key.to_string(),
                 };
@@ -464,6 +461,25 @@ fn strike_input(tool_input: Option<&serde_json::Value>) -> Option<serde_json::Va
         }
     }
     Some(input)
+}
+
+/// What "the same input" means for one gate's input-tracked strike: the fields
+/// its author listed in `key_fields`, else the default of [`strike_input`].
+/// A listed field that is missing hashes as a path with no value, so absent,
+/// `""` and `null` are three different inputs: a gate that keys on a field the
+/// call left out has not been told the field is empty.
+fn input_key(spec: Option<&StateSpec>, req: &EngineRequest) -> u64 {
+    let Some(fields) = spec.and_then(|s| s.key_fields.as_ref()) else {
+        return fnv1a(strike_input(req.raw.get("tool_input")).as_ref());
+    };
+    let picked: Vec<Value> = fields
+        .iter()
+        .map(|path| match crate::policy::gate::lookup(req, path) {
+            Some(value) => serde_json::json!([path, value]),
+            None => serde_json::json!([path]),
+        })
+        .collect();
+    fnv1a(Some(&Value::Array(picked)))
 }
 
 /// FNV-1a over a value's JSON text: a strike key that is stable across runs and

@@ -224,6 +224,13 @@ pub struct StateSpec {
     /// fire again (the ratio after a compaction, not the one that tripped it).
     #[serde(default)]
     pub rearm_below: Option<f64>,
+    /// With `track: "input"`, the fields that make two calls "the same input":
+    /// each path resolves the way a `field_*` condition's does (the tool input
+    /// first, then the payload; `.` walks nested keys). Unset, a shell call
+    /// counts without its `description` and any other tool by its whole input.
+    /// Read off the request as it arrived: it collects no fact.
+    #[serde(default)]
+    pub key_fields: Option<Vec<String>>,
 }
 
 impl StateSpec {
@@ -250,7 +257,8 @@ pub enum Track {
     /// free-text `description` is not part of the input: the same command in
     /// other words is the same command. Every field that changes what runs
     /// (`timeout`, `workdir`) is, and so is a `description` that arrives
-    /// without a `command`, because there it is the payload.
+    /// without a `command`, because there it is the payload. A gate that
+    /// knows better says so with `key_fields`.
     Input,
 }
 
@@ -370,6 +378,8 @@ pub enum CompileError {
     },
     #[error("unknown event `{0}` in gate `{1}`")]
     UnknownEvent(String, String),
+    #[error("gate `{gate}` has unusable state.key_fields: {reason}")]
+    KeyFields { gate: String, reason: &'static str },
 }
 
 impl Gate {
@@ -379,10 +389,27 @@ impl Gate {
     /// # Errors
     ///
     /// Returns [`CompileError::UnknownEvent`] when the gate names an event
-    /// she does not recognize.
+    /// she does not recognize, and [`CompileError::KeyFields`] when its
+    /// `state.key_fields` is empty or names a blank path: a list that keys on
+    /// nothing would call every input the same one.
     pub fn compile(def: GateDef) -> Result<Self, CompileError> {
         validate_event(&def.event)
             .map_err(|()| CompileError::UnknownEvent(def.event.clone(), def.id.clone()))?;
+        if let Some(fields) = def.state.as_ref().and_then(|s| s.key_fields.as_ref()) {
+            let reason = if fields.is_empty() {
+                Some("the list is empty")
+            } else if fields.iter().any(|f| f.trim().is_empty()) {
+                Some("a path is blank")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(CompileError::KeyFields {
+                    gate: def.id.clone(),
+                    reason,
+                });
+            }
+        }
 
         let condition = |c: ConditionDef| match c {
             ConditionDef::CommandRegex { pattern } => {

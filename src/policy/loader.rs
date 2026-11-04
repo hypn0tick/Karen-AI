@@ -1,6 +1,6 @@
 //! Loads your rules from disk. She compiles regex once, then brings them up forever. The Karen who does the work once.
 
-use crate::policy::gate::{CompileError, Gate, GateDef, Layer};
+use crate::policy::gate::{CompileError, Gate, GateDef, Layer, Track};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -741,6 +741,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
 
     gates.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
     warn_off_allowlist(&gates, &user_env, &mut issues);
+    warn_key_fields(&gates, &mut issues);
     // Each layer's sections deserialized alone; a merge that still does not
     // keeps the defaults rather than dropping a single gate.
     let mut config = config_from(&table, &primary).unwrap_or_else(|error| {
@@ -825,6 +826,27 @@ fn warn_off_allowlist(gates: &[Gate], user_env: &[String], issues: &mut Vec<Merg
                     "`{}` templates {} in a reason — env facts never render; the placeholder stays literal",
                     gate.id,
                     templated.join(", ")
+                ),
+                kind: IssueKind::Warning,
+            });
+        }
+    }
+}
+
+/// `key_fields` says what makes two inputs the same one, and only an
+/// input-tracked strike reads it; on any other `track` it is dead text, so she
+/// names the gate rather than let its author believe the list is in force.
+fn warn_key_fields(gates: &[Gate], issues: &mut Vec<MergeIssue>) {
+    for gate in gates {
+        let Some(spec) = gate.state.as_ref() else {
+            continue;
+        };
+        if spec.key_fields.is_some() && spec.track != Track::Input {
+            issues.push(MergeIssue {
+                layer: gate.layer,
+                message: format!(
+                    "`{}` sets state.key_fields without track \"input\" — the list is ignored",
+                    gate.id
                 ),
                 kind: IssueKind::Warning,
             });
