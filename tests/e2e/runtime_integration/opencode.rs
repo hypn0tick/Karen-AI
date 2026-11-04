@@ -983,6 +983,216 @@ console.log(JSON.stringify(result));
 
 #[test]
 #[serial]
+fn karen_opencode_plugin_measures_each_turn_against_the_model_it_ran_on() {
+    // The Karen who does not divide one model's tokens by another's window: the
+    // model comes from the assistant message's own `providerID`/`modelID`, the
+    // window is resolved once per model, a switch re-resolves it, and a message
+    // still in flight (no tokens yet) does not move the meter.
+    const RATIO_GATE: &str = r#"{
+  "id": "half-full",
+  "description": "Hold a tool call at 40% of the window.",
+  "event": "PreToolUse",
+  "match": { "all": [ { "type": "field_gte", "field": "facts.context_ratio", "value": 0.4 } ] },
+  "action": { "type": "deny", "reason": "context half full: compress the finished work" }
+}"#;
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::with_config(
+        crate::e2e::common::DEFAULT_CONFIG,
+        &[crate::e2e::common::GateFixture {
+            file: "half-full.json",
+            content: RATIO_GATE,
+        }],
+        &[],
+    );
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+
+    // The session record carries no model (as the SDK's `Session` type does not),
+    // so every window below can only have come from the assistant messages.
+    let script = env.temp_dir.path().join("drive-model-switch.mjs");
+    let driver = r#"
+const { KarenAI } = await import("__PLUGIN__");
+const calls = { session: 0, providers: 0 };
+const client = {
+  session: {
+    get: async () => { calls.session++; return { data: { parentID: null } }; },
+    messages: async () => ({ data: [] }),
+    todo: async () => ({ data: [] }),
+    prompt: async () => ({})
+  },
+  config: {
+    providers: async () => {
+      calls.providers++;
+      return { data: { providers: [{ id: "mock", models: { small: { limit: { context: 1000 } }, big: { limit: { context: 5000 } } } }], default: null } };
+    }
+  }
+};
+const hooks = await KarenAI({ directory: "__DIR__", client });
+const said = async (modelID, input) => hooks.event({ event: { type: "message.updated", properties: { sessionID: "s1", info: { role: "assistant", id: "a-" + modelID + input, providerID: "mock", modelID, tokens: { input, output: 5, cache: { read: 0, write: 0 } } } } } });
+let n = 0;
+const before = async () => {
+  try {
+    await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1", callID: "c" + (n++) }, { args: { command: "echo hi" } });
+    return "allowed";
+  } catch (e) { return "denied"; }
+};
+const result = { steps: [] };
+await said("small", 500);
+result.steps.push(await before(), await before());
+result.afterSmall = { providers: calls.providers };
+await said("big", 0);
+result.steps.push(await before());
+await said("big", 600);
+result.steps.push(await before(), await before());
+result.afterBig = { providers: calls.providers };
+await said("small", 500);
+result.steps.push(await before());
+result.providers = calls.providers;
+result.sessionLookups = calls.session;
+console.log(JSON.stringify(result));
+"#
+    .replace("__PLUGIN__", &plugin_url)
+    .replace("__DIR__", &project_dir.display().to_string());
+    fs::write(&script, driver).unwrap();
+
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+
+    // 500 of 1000 is half full; the in-flight `big` message (no tokens) leaves
+    // the meter on `small`; 600 of 5000 is not; back on `small` it is again.
+    assert_eq!(
+        result["steps"],
+        serde_json::json!(["denied", "denied", "denied", "allowed", "allowed", "denied"]),
+        "each turn is measured against its own model's window: {result}"
+    );
+    // One lookup per model, never one per tool call.
+    assert_eq!(result["afterSmall"]["providers"], 1, "{result}");
+    assert_eq!(result["afterBig"]["providers"], 2, "{result}");
+    assert_eq!(result["providers"], 3, "{result}");
+    assert_eq!(
+        result["sessionLookups"], 0,
+        "a model named by the message needs no session lookup: {result}"
+    );
+}
+
+#[test]
+#[serial]
+fn karen_opencode_plugin_reads_the_model_from_the_message_it_reviews_at_idle() {
+    // A bridge that loaded after the turn landed never saw its `message.updated`:
+    // the idle review reads the last assistant message itself, and that message
+    // names the model whose window the tokens fill.
+    const STOP_RATIO_GATE: &str = r#"{
+  "id": "stop-half-full",
+  "description": "Hold the stop at 40% of the window.",
+  "event": "Stop",
+  "match": { "all": [ { "type": "field_gte", "field": "facts.context_ratio", "value": 0.4 } ] },
+  "action": { "type": "deny", "reason": "context half full: compress the finished work" }
+}"#;
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::with_config(
+        crate::e2e::common::DEFAULT_CONFIG,
+        &[crate::e2e::common::GateFixture {
+            file: "stop-half-full.json",
+            content: STOP_RATIO_GATE,
+        }],
+        &[],
+    );
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+
+    // No `message.updated` is ever delivered, and the session record names no model.
+    let script = env.temp_dir.path().join("drive-idle-model.mjs");
+    let driver = r#"
+const { KarenAI } = await import("__PLUGIN__");
+const prompts = [];
+const client = {
+  session: {
+    get: async () => ({ data: { parentID: null } }),
+    messages: async () => ({ data: [{ info: { role: "assistant", id: "a1", providerID: "mock", modelID: "small", tokens: { input: 500, output: 5, cache: { read: 0, write: 0 } } }, parts: [{ type: "text", text: "done" }] }] }),
+    todo: async () => ({ data: [] }),
+    prompt: async ({ body }) => { prompts.push(body); return {}; }
+  },
+  config: {
+    providers: async () => ({ data: { providers: [{ id: "mock", models: { small: { limit: { context: 1000 } } } }], default: null } })
+  }
+};
+const hooks = await KarenAI({ directory: "__DIR__", client });
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: "s1" } } });
+await new Promise((resolve) => setTimeout(resolve, 200));
+console.log(JSON.stringify({ held: prompts.length }));
+"#
+    .replace("__PLUGIN__", &plugin_url)
+    .replace("__DIR__", &project_dir.display().to_string());
+    fs::write(&script, driver).unwrap();
+
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+    assert_eq!(
+        result["held"], 1,
+        "500 tokens in the 1000-token window the message names hold the stop: {result}"
+    );
+}
+
+#[test]
+#[serial]
 fn karen_opencode_plugin_carries_a_provider_error_into_the_stop_review() {
     // The case the phase exists for: `session.error` never reaches the agent on
     // OpenCode, so the Stop review that follows carries the failure as a fact —

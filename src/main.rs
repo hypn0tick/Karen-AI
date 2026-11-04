@@ -1582,6 +1582,8 @@ const lastAssistant = (messages) => {
     text: (m.parts ?? []).filter((p) => p.type === "text").map((p) => p.text).join("\n"),
     // Context tokens as Karen counts them: input plus both cache counts.
     tokens: t ? (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0) : 0,
+    // The model this message ran on, which decides the window its tokens fill.
+    model: m.info.providerID && m.info.modelID ? { providerID: m.info.providerID, modelID: m.info.modelID } : undefined,
   };
 };
 
@@ -1593,7 +1595,8 @@ export const KarenAI = async ({ directory, client }) => {
   const plans = new Map(); // session -> todo list signature at its last review
   const offDuty = new Set(); // sessions already told that no policy is enforced
   const lastTokens = new Map(); // session -> context tokens of its last assistant message
-  const windows = new Map(); // session -> its model's context window, null when resolved to none
+  const models = new Map(); // session -> the model of the last assistant message that reported tokens
+  const windows = new Map(); // session -> { model, limit }: the window resolved for that model, limit null when resolved to none
   const errors = new Map(); // session -> the provider's own last failure, cleared when a later message completes clean
   // A systemMessage holds one line per notice. A policy that does not load fails open, and
   // each session hears that once, not on every call; every other line passes through.
@@ -1615,10 +1618,11 @@ export const KarenAI = async ({ directory, client }) => {
     return lines.length ? lines.join("\n") : null;
   };
   // The occupancy facts of a session, as its own payload `facts`: the context tokens of its
-  // last assistant message (kept current by `message.updated`) and its model's context window,
-  // resolved once per session and cached. A gate on every tool call then costs no API call of
-  // its own, and each fact is supplied only when known: Karen reads a payload's own facts
-  // first and never guesses one.
+  // last assistant message (kept current by `message.updated`) and the context window of the
+  // model that message ran on, resolved once per model and cached. A session that switches
+  // model mid-run is measured against the new model's window from its next message on. A gate
+  // on every tool call then costs no API call of its own, and each fact is supplied only when
+  // known: Karen reads a payload's own facts first and never guesses one.
   const contextFacts = async (sid) => {
     const facts = {};
     const tokens = lastTokens.get(sid);
@@ -1629,20 +1633,25 @@ export const KarenAI = async ({ directory, client }) => {
     // later assistant message completes without an error, so the fact never goes stale.
     const failure = sid ? errors.get(sid) : undefined;
     if (failure) facts.provider_error = failure;
-    if (sid && client?.session && client?.config) {
+    if (sid && client?.config) {
       try {
-        if (!windows.has(sid)) {
+        // The assistant message names its model in the SDK's own types. A session that has
+        // not produced one yet is asked once for the model its record carries, as the wake
+        // is; what that finds, or fails to find, is cached like any other window.
+        let model = models.get(sid);
+        if (!model && !windows.has(sid) && client.session) {
           const s = (await client.session.get({ path: { id: sid } }))?.data;
-          const { providerID, modelID } = s?.model ?? {};
-          const model = providerID && modelID
-            ? (await client.config.providers())?.data?.providers?.find((p) => p.id === providerID)?.models?.[modelID]
-            : undefined;
-          const found = model?.limit?.context;
+          if (s?.model?.providerID && s?.model?.modelID) model = { providerID: s.model.providerID, modelID: s.model.modelID };
+          else windows.set(sid, { model: null, limit: null });
+        }
+        const key = model ? JSON.stringify([model.providerID, model.modelID]) : null;
+        if (key && windows.get(sid)?.model !== key) {
+          const found = (await client.config.providers())?.data?.providers?.find((p) => p.id === model.providerID)?.models?.[model.modelID]?.limit?.context;
           // A window she could not resolve is cached as null, so one failed lookup never
           // becomes one lookup per tool call; the fact stays absent, never guessed.
-          windows.set(sid, Number.isFinite(found) ? found : null);
+          windows.set(sid, { model: key, limit: Number.isFinite(found) ? found : null });
         }
-        const limit = windows.get(sid);
+        const limit = windows.get(sid)?.limit;
         if (Number.isFinite(limit)) facts.context_window = limit;
       } catch (e) {
         fail("context window on session.get/providers", sid, e);
@@ -1689,7 +1698,12 @@ export const KarenAI = async ({ directory, client }) => {
           // later call gets through.
           if (sid && info.time?.completed && !info.error) errors.delete(sid);
           const tokens = t ? (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0) : 0;
-          if (sid && tokens > 0) lastTokens.set(sid, tokens);
+          // Tokens and the model they were counted on travel together, so a ratio never
+          // divides one model's tokens by another's window.
+          if (sid && tokens > 0) {
+            lastTokens.set(sid, tokens);
+            if (info.providerID && info.modelID) models.set(sid, { providerID: info.providerID, modelID: info.modelID });
+          }
         }
         return;
       }
@@ -1719,6 +1733,7 @@ export const KarenAI = async ({ directory, client }) => {
           plans.delete(sid);
           offDuty.delete(sid);
           lastTokens.delete(sid);
+          models.delete(sid);
           windows.delete(sid);
           errors.delete(sid);
         }
@@ -1734,7 +1749,11 @@ export const KarenAI = async ({ directory, client }) => {
       // The latest assistant message is in hand, so its tokens are read from it directly:
       // the `message.updated` cache is current even if this OpenCode process just loaded
       // and never saw the turn land.
-      if (last.tokens > 0) lastTokens.set(sid, last.tokens);
+      if (last.tokens > 0) {
+        lastTokens.set(sid, last.tokens);
+        if (last.model) models.set(sid, last.model);
+
+      }
       // An inline child (task tool) has a parentID and stops as a subagent, as in Claude Code. A lane started
       // in its own terminal is a top-level session and gets Stop: scope gates to roles with conditions (cwd).
       let parent = null;
