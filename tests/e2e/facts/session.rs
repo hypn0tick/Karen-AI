@@ -322,3 +322,59 @@ fn karen_validate_names_each_off_list_variable_once_with_its_prefix() {
         "each variable once, each with its prefix: {messages:?}"
     );
 }
+
+#[test]
+#[serial]
+fn karen_validate_stays_quiet_about_a_disabled_gates_env_reads() {
+    // A disabled gate reads nothing, so a warning about what it would read is
+    // noise: the starter pack ships such gates and must stay silent until the
+    // user opts in. The same gate enabled is named, so the quiet is not vacuous.
+    fn gate(enabled: bool) -> &'static str {
+        Box::leak(
+            format!(
+                r#"{{
+  "id": "env-sleeper",
+  "description": "Reads and templates an env fact it may not have.",
+  "enabled": {enabled},
+  "event": "PreToolUse",
+  "match": {{ "all": [ {{ "type": "field_regex", "field": "facts.env.KAREN_TEST_ASLEEP", "pattern": "." }} ] }},
+  "action": {{ "type": "deny", "reason": "lane {{facts.env.KAREN_TEST_ASLEEP}} stops" }}
+}}"#
+            )
+            .into_boxed_str(),
+        )
+    }
+    let messages_for = |enabled: bool| -> Vec<String> {
+        let env = TestEnv::with_config(
+            crate::e2e::common::DEFAULT_CONFIG,
+            &[GateFixture {
+                file: "env-sleeper.json",
+                content: gate(enabled),
+            }],
+            &[],
+        );
+        let (code, stdout, _stderr) = env.run_karen(&["validate", "--json"]);
+        assert_exit_code(code, 0);
+        let data = assert_json_ok(&stdout);
+        data["issues"]
+            .as_array()
+            .expect("issues array")
+            .iter()
+            .filter_map(|i| i["message"].as_str().map(str::to_string))
+            .collect()
+    };
+    let awake = messages_for(true);
+    assert!(
+        awake.iter().any(|m| m.contains("`env-sleeper` matches")),
+        "an enabled gate is named: {awake:?}"
+    );
+    assert!(
+        awake.iter().any(|m| m.contains("`env-sleeper` templates")),
+        "an enabled gate's templated env is named: {awake:?}"
+    );
+    let asleep = messages_for(false);
+    assert!(
+        asleep.iter().all(|m| !m.contains("env-sleeper")),
+        "a disabled gate is not named: {asleep:?}"
+    );
+}

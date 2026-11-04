@@ -787,9 +787,11 @@ fn env_names(table: &toml::Table) -> Vec<String> {
 /// reason templating `{facts.env.*}` renders the literal placeholder — the
 /// allowlist granted a match, not a broadcast into reasons, notices and the
 /// notify log. A gate that can never fire is a silent no-op nobody knows is
-/// off duty; she names it at the door, not after the party.
+/// off duty; she names it at the door, not after the party. A gate switched
+/// off reads nothing, so it gets no warning: the starter pack ships some, and
+/// they stay quiet until somebody turns them on.
 fn warn_off_allowlist(gates: &[Gate], user_env: &[String], issues: &mut Vec<MergeIssue>) {
-    for gate in gates {
+    for gate in gates.iter().filter(|gate| gate.enabled) {
         // Each variable once, however many conditions read it: a gate that
         // matches and exempts the same name is one problem, not two.
         let mut off: Vec<&str> = Vec::new();
