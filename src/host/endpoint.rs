@@ -60,6 +60,23 @@ pub enum Request {
     Screen,
     /// Type one line of printable text and press Enter, now, whatever the runtime is doing.
     Type { text: String },
+    /// Type one line when the session is idle, behind whatever is already waiting; answer at once
+    /// with the place in the queue. What becomes of it later is filed in the runtime log by the
+    /// host, because the process that asked will have exited.
+    Deliver { text: String, meta: DeliveryMeta },
+}
+
+/// What the runtime log records about a delivery, handed over with it. The host files the line, so
+/// it needs to know whose command this was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryMeta {
+    pub session: String,
+    pub gate: String,
+    pub runtime: String,
+    pub command: String,
+    /// The arguments as the gate wrote them, placeholders unexpanded; never the rendering.
+    #[serde(default)]
+    pub arguments: Option<String>,
 }
 
 /// What the host reports about itself.
@@ -72,6 +89,8 @@ pub struct HostStatus {
     pub cols: u16,
     /// Milliseconds since the runtime last drew anything.
     pub quiet_ms: u64,
+    /// How many delivered lines are waiting for the session to be idle.
+    pub queued: usize,
 }
 
 /// The one-line answer to a [`Request`].
@@ -87,6 +106,9 @@ pub struct Response {
     /// How many characters were typed (not counting the Enter).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typed: Option<usize>,
+    /// Where a delivered line stands in the queue: 1 is next.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued: Option<usize>,
 }
 
 impl Response {

@@ -87,6 +87,9 @@ enum Command {
 
 #[derive(Args)]
 struct RunArgs {
+    /// Record the program as this runtime (`claude`, `codex`, `opencode`) when its file name is not the runtime's: a wrapper script, a renamed binary.
+    #[arg(long = "as", value_name = "RUNTIME")]
+    name: Option<String>,
     /// The runtime to host: `claude`, `codex`, `opencode`, or any command line program on PATH.
     runtime: std::ffi::OsString,
     /// Arguments for the runtime, passed through untouched.
@@ -251,6 +254,7 @@ fn run_host(args: RunArgs) -> i32 {
     let options = karen::host::RunOptions {
         program: args.runtime,
         args: args.args,
+        name: args.name,
     };
     match karen::host::run(&options) {
         Ok(code) => code,
@@ -853,9 +857,17 @@ fn runtime_layers(set: &PolicySet) -> Value {
         .runtimes
         .iter()
         .map(|runtime| {
+            let layers = karen::engine::runtime_command::layers_for(runtime);
             json!({
                 "runtime": runtime,
-                "layers": karen::engine::runtime_command::layers_for(runtime),
+                "layers": layers,
+                "reach": layers
+                    .iter()
+                    .map(|layer| json!({
+                        "layer": layer,
+                        "when": karen::engine::runtime_command::reach_condition(layer),
+                    }))
+                    .collect::<Vec<_>>(),
             })
         })
         .collect()
@@ -874,16 +886,22 @@ fn print_runtime_layers(set: &PolicySet) {
     }
     println!("runtime_command layers:");
     for entry in runtime_layers(set).as_array().into_iter().flatten() {
-        let layers: Vec<&str> = entry["layers"]
+        let layers: Vec<String> = entry["reach"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(Value::as_str)
+            .filter_map(|reach| {
+                Some(format!(
+                    "{} ({})",
+                    reach["layer"].as_str()?,
+                    reach["when"].as_str()?
+                ))
+            })
             .collect();
         let reach = if layers.is_empty() {
             "none".to_string()
         } else {
-            layers.join(", ")
+            layers.join("; ")
         };
         println!("  {}: {reach}", entry["runtime"].as_str().unwrap_or(""));
     }

@@ -5,7 +5,7 @@
 // Windows) and starts the real fake runtime in it. Nothing types into an agent.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -15,6 +15,8 @@ use karen::host::{Request, Response};
 
 use crate::e2e::common::karen_binary_path;
 
+#[cfg(test)]
+mod deliver;
 #[cfg(test)]
 mod run;
 
@@ -67,17 +69,35 @@ struct Hosted {
     stdin: Option<std::process::ChildStdin>,
     log: tempfile::NamedTempFile,
     output: Arc<Mutex<Vec<u8>>>,
+    /// The home `start` made, kept until the host is dropped.
+    home: Option<tempfile::TempDir>,
 }
 
 impl Hosted {
     /// Host the fake runtime with `args` after it, busy for `work_ms` per line.
     fn start(args: &[&str], work_ms: u64) -> Self {
+        let home = tempfile::tempdir().expect("a home");
+        let mut host = Self::start_in(home.path(), None, args, work_ms);
+        host.home = Some(home);
+        host
+    }
+
+    /// Host it with `home` as its home (so it reads that user layer and files in that runtime log),
+    /// recorded as runtime `name` when given.
+    fn start_in(home: &Path, name: Option<&str>, args: &[&str], work_ms: u64) -> Self {
         let log = tempfile::NamedTempFile::new().expect("a log file");
         let mut command = Command::new(karen_binary_path());
+        command.arg("run");
+        if let Some(name) = name {
+            command.args(["--as", name]);
+        }
         command
-            .arg("run")
             .arg(fake_runtime())
             .args(args)
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .env_remove("KAREN_HOME")
+            .env_remove("KAREN_POLICIES")
             .env("FAKE_RUNTIME_LOG", log.path())
             .env("FAKE_RUNTIME_WORK_MS", work_ms.to_string())
             .stdin(Stdio::piped())
@@ -102,6 +122,7 @@ impl Hosted {
             stdin,
             log,
             output,
+            home: None,
         }
     }
 

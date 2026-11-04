@@ -45,9 +45,11 @@ An entry in `runtime_commands` that is not one word beginning with `/`, or an en
 | `refused:not-allowlisted` | The command is not in `[actions] runtime_commands`. |
 | `undelivered:unsafe-text` | The command or the rendered arguments hold a control character, or the whole line runs past 1000 characters. |
 | `undelivered:no-layer` | Allowed, and nothing reaches this session: no layer exists for its runtime, or the caller did not offer the one that does. |
+| `undelivered:host-unreachable` | The session's environment names a terminal host (`karen run`) for its runtime, and it did not answer in three seconds, or could not be reached. The `layer` field names the one that was tried. |
+| `undelivered:host-refused` | The host answered, and would not take the line: its queue was full, or it was not a line it will type. |
 | `handed-off` | Allowed, and a layer took it. The `layer` field names it. The layer delivers after her process has exited, so this is the last thing she can know. |
 
-`refused` means a rule of hers stopped it. `undelivered` means it was allowed and did not arrive. `handed-off` means a layer has it. Every one leaves a log line, and none is ever silent.
+`refused` means a rule of hers stopped it. `undelivered` means it was allowed and did not arrive. `handed-off` means a layer has it, and the layer files the rest: the OpenCode bridge writes `sent`, `sent-unconfirmed` and its own `undelivered:*` statuses (below), and the terminal host writes `sent`, `undelivered:timeout` (no idle moment came in time), `undelivered:host-exited` (the runtime ended with the line still waiting) and `undelivered:type-failed` (the terminal would not take it). Every one leaves a log line, and none is ever silent.
 
 ## Arguments
 
@@ -74,13 +76,15 @@ Every attempt writes one line to `<Karen home>/logs/karen-runtime.jsonl`, rotate
 
 ## Which layer each runtime gets
 
-A command reaches a session through whichever layer that session has: the runtime's own plugin API, or a terminal Karen can write to. A runtime with no layer ends every allowed attempt as `undelivered:no-layer`, and `karen validate` names it. Set `[actions] runtimes` to the runtimes you can actually reach and the warning goes quiet for the rest; the list never stops a delivery on a runtime that has a layer.
+A command reaches a session through whichever layer that session has: the runtime's own plugin API, or a terminal Karen can write to. A runtime with no layer ends every allowed attempt as `undelivered:no-layer`, and in the lean build `karen validate` names it. Set `[actions] runtimes` to the runtimes you can actually reach and the report goes quiet for the rest; the list never stops a delivery on a runtime that has a layer.
+
+A layer that exists is not a layer that is there: `karen validate` prints what each one needs, and a session that does not have it ends `undelivered:no-layer` like any other. When a runtime has two, the first one the session has wins, so OpenCode's own API beats the terminal.
 
 | Runtime | Layer | Reaches it when |
 |---------|-------|-----------------|
-| Claude Code | none yet | |
-| Codex | none yet | |
-| OpenCode | `opencode-native` | the bridge plugin is installed and current (`karen setup opencode`) |
+| Claude Code | `terminal-host` | the session was started with `karen run claude` |
+| Codex | `terminal-host` | the session was started with `karen run codex` |
+| OpenCode | `opencode-native`, then `terminal-host` | the bridge plugin is installed and current (`karen setup opencode`); or the session was started with `karen run opencode` |
 
 ## OpenCode: the native layer
 
@@ -127,10 +131,35 @@ Everything after the runtime goes to the runtime untouched. `<runtime>` is any p
 | `{"op":"status"}` | the runtime, both pids, the terminal size, and how many milliseconds since the runtime last drew anything |
 | `{"op":"screen"}` | the visible screen as plain text, the size, the cursor and whether the runtime is on the alternate screen |
 | `{"op":"type","text":"/compact"}` | the line typed, then Enter, now |
+| `{"op":"deliver","text":"/compact","meta":{...}}` | the line's place in the queue (1 is next), at once; see below |
 
 `type` accepts one printable line: no control character, no line break, at most 1000 characters. An escape sequence is a keystroke she was not asked to make, and in testing a cooked-mode terminal ate an injected cursor-up. The Enter follows the text after a short pause (150 ms), because a TUI that treats a burst of input as a paste would otherwise take the Enter for part of the paste and never submit. That pause is a guess about how those TUIs behave, and it is not verified against a real Claude Code or Codex; the tests type into the fake runtime only.
 
-`type` types whatever the runtime is doing. Waiting for the session to be idle is the delivery layer's job, not the endpoint's. Screen text is the host's data: it is never logged and never rendered into a gate's text.
+`type` types whatever the runtime is doing: it is the primitive, and nothing in a gate's path uses it. `deliver` is the one a gate's `runtime_command` reaches, and it waits for the session.
+
+Screen text is the host's data: it is never logged and never rendered into a gate's text.
+
+**Delivery: waiting for an idle session.** `deliver` takes the line and answers at once, because the `karen hook` process that asked is about to exit and must not hold up a tool call. The host keeps the line in a queue (first in, first out, at most 16) and types it when the session is idle, one per idle. Idle means three things at once:
+
+- the runtime has drawn nothing for `quiet_ms` (400 ms by default; a spinner redraws constantly, so a running turn is never quiet);
+- the prompt is on the screen and empty. A half-typed prompt is busy: the line would be appended to what the owner was writing, and then submitted for them;
+- the runtime's own "press Esc to interrupt" line is not near the prompt.
+
+Nothing is guessed in the idle direction: a screen with no prompt she recognises is busy, so a wrong rule makes a command time out and say so, and never types into a turn. A line that waits `timeout_secs` (120 by default) is given up on as `undelivered:timeout` and never typed. When the runtime exits with lines still waiting, each is filed `undelivered:host-exited`. The host files all of these itself, in the runtime log, with `layer` `terminal-host`, `route` `karen run`, `status` and `waited_ms`, and it keeps the arguments as the gate wrote them, as the rest of the log does.
+
+The prompt rules are provisional for the three real runtimes: Claude Code's comes from one recorded screen, Codex's and OpenCode's from how those tools describe themselves, and any other program gets the plain rule (a `>` prompt on the last row). A dim suggestion sitting in an otherwise empty prompt reads as typed text, so it counts as busy: the command times out rather than risk it. Nothing here was checked against a live agent, because no test types into one; the install check on a throwaway `karen run claude` session is what settles it.
+
+**Hook side.** The host never decides what may be typed. The hook that calls it has already applied every rule above (user layer, allowlist, one printable line) and only then opens the endpoint, and a test pins that a refused attempt sends the endpoint nothing. The host is reached only when the hook's own environment names one (`KAREN_HOST_ENDPOINT` and `KAREN_HOST_TOKEN`) and `KAREN_HOST_RUNTIME` equals the session's runtime, so a Claude Code hook running under a hosted Codex does not type into Codex. `karen run --as claude ./wrapper.sh` records a program under the runtime's name when its file name is not it.
+
+**Timings.** `[host]` in the user layer's `config.toml` (a project layer's is ignored and named):
+
+| Key | Default | Range | What it does |
+|-----|---------|-------|--------------|
+| `enter_delay_ms` | 150 | 0 to 5000 | The pause between the typed text and its Enter, so a terminal UI that treats a burst of input as a paste does not take the Enter for part of it. The default is a guess. A measured value belongs here. |
+| `quiet_ms` | 400 | 50 to 10000 | How long the runtime must have drawn nothing to count as idle. |
+| `timeout_secs` | 120 | 1 to 3600 | How long a line waits for an idle session. |
+
+A value outside its range is named by `karen validate` and the default stands.
 
 **What the token is, and is not.** It keeps strangers off the endpoint: anything that is not a descendant of the hosted runtime does not know it, and the socket sits in a directory only its owner can enter (a Windows pipe's default access lets other users read from it but not write to it, and she does not lean on that). It is not a boundary against the hosted tree itself. The runtime and everything it starts share its terminal, and on Windows any of them can write to the console's input without Karen at all. So the rules that matter are the ones upstream of the endpoint: `runtime_command` is user-layer only, allowlisted, and one printable line, and the endpoint enforces the line rule again on its own. A host does not read the owner's allowlist, and she does not pretend otherwise.
 
@@ -145,8 +174,6 @@ Everything after the runtime goes to the runtime untouched. `<runtime>` is any p
 
 **The lean build.** `karen run` and everything behind it is the default-on cargo feature `host`. `cargo build --no-default-features` leaves hooks, gates and the rest, and about two dozen fewer crates on Windows; there, `karen run` says so and exits `70`.
 
-No gate reaches the terminal host yet. The delivery layer that waits for an idle session, queues what arrives mid-turn and files `handed-off` or `undelivered:timeout` is the next piece, and until it exists a `runtime_command` for Claude Code or Codex still ends `undelivered:no-layer`.
-
 ## How this is tested
 
-The attempts are tested end to end against the real binary: a user layer and a project layer in a temporary home, a hook payload in, the log and the verdict out. Nothing here types into a live session. The OpenCode bridge is tested by running the real plugin under `node` against a mock client that records every call it is asked to make, so the tests prove which call is made and when, and never that OpenCode honors it. The terminal host is tested by starting the real `karen` binary on `examples/fake-runtime`, a small program that paints a banner and a prompt, takes a line, is busy for a moment and answers (it logs every line it receives, every argument and every `KAREN_HOST_*` variable, which is how the tests know exactly what reached it). The tests run on Windows (ConPTY) and on Linux (a pty, under WSL); the macOS arm is the Unix arm and has not been run. Any layer that types into a terminal is tested against the fake runtime and recorded screens, never a real agent.
+The attempts are tested end to end against the real binary: a user layer and a project layer in a temporary home, a hook payload in, the log and the verdict out. Nothing here types into a live session. The OpenCode bridge is tested by running the real plugin under `node` against a mock client that records every call it is asked to make, so the tests prove which call is made and when, and never that OpenCode honors it. The terminal host is tested by starting the real `karen` binary on `examples/fake-runtime`, a small program that paints a banner and a prompt, takes a line, is busy for a moment and answers (it logs every line it receives, every argument and every `KAREN_HOST_*` variable, which is how the tests know exactly what reached it). The delivery tests drive the real `karen hook` with the variables a hosted runtime would pass it, against the real host: a command delivered to an idle session, commands queued behind a busy turn and typed in order, a half-typed prompt left alone until the line times out, lines still waiting when the runtime exits, a host for another runtime, and a recording endpoint that proves every refused attempt sends it nothing. The idle rules are unit-tested on screens written to mirror the real ones. The tests run on Windows (ConPTY) and on Linux (a pty, under WSL); the macOS arm is the Unix arm and has not been run. Any layer that types into a terminal is tested against the fake runtime and recorded screens, never a real agent.

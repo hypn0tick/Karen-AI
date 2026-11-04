@@ -76,3 +76,16 @@ claude = 200000
 # scopes the report and nothing else: a delivery is attempted on any runtime
 # that has a layer. The Karen who stops nagging you about runtimes you never use.
 # runtimes = ["claude", "codex", "opencode"]
+
+# How `karen run` waits for a session and types into it. The USER layer's alone,
+# like [actions]: a project layer that sets it is ignored and named by validate.
+# [host]
+# The pause between a typed line and its Enter, in ms (0-5000), so a terminal UI
+# that reads a burst of input as a paste does not swallow the Enter. 150 is a
+# guess, not a measurement; a measured value goes here.
+# enter_delay_ms = 150
+# How long the session must have drawn nothing to count as idle, in ms (50-10000).
+# quiet_ms = 400
+# How long a command waits for an idle session before it is given up on as
+# `undelivered:timeout`, in seconds (1-3600). The Karen who waits her turn, but not forever.
+# timeout_secs = 120

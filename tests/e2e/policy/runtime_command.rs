@@ -85,13 +85,16 @@ fn karen_logs_an_allowed_command_that_no_layer_carries() {
         out.get("decision").is_none() && out.get("hookSpecificOutput").is_none(),
         "a command typed into a session is a side effect, not a verdict: {out}"
     );
-    // The one thing she says aloud is the merge notice: a gate that types, and
-    // a runtime nothing reaches, is a configuration the owner should hear of.
-    assert!(
-        out["systemMessage"]
-            .as_str()
-            .is_some_and(|m| m.contains("has no layer that reaches claude, codex sessions")),
-        "the merge notice names the unreached runtimes: {out}"
+    // The lean build has no layer for claude or codex at all, and a gate that types
+    // into them is a configuration the owner should hear of. The default build has
+    // the terminal host for them, which only a session run under `karen run` uses.
+    let said = out["systemMessage"]
+        .as_str()
+        .is_some_and(|m| m.contains("has no layer that reaches claude, codex sessions"));
+    assert_eq!(
+        said,
+        cfg!(not(feature = "host")),
+        "the merge notice names runtimes nothing can reach: {out}"
     );
     let line = only_line(&env);
     assert_eq!(line["session"], "rc-1");
@@ -427,31 +430,42 @@ fn karen_validate_reports_each_configured_runtime_and_the_layers_that_reach_it()
             .find(|l| l["runtime"] == runtime)
             .map(|l| l["layers"].clone())
     };
-    assert_eq!(layers_of("opencode"), Some(json!(["opencode-native"])));
-    assert_eq!(layers_of("claude"), Some(json!([])));
-    assert_eq!(layers_of("codex"), Some(json!([])));
     let issues = validate_issues(&env);
-    assert!(
-        issues.iter().any(|m| m.contains(
-            "has no layer that reaches claude, codex sessions, so `compact-it` will log `undelivered:no-layer` there"
-        )),
-        "validate must name every runtime nothing reaches, once: {issues:?}"
-    );
-    assert_eq!(
-        issues
-            .iter()
-            .filter(|m| m.contains("no layer that reaches"))
-            .count(),
-        1,
-        "one warning, not one per runtime: {issues:?}"
-    );
+    let unreached = issues
+        .iter()
+        .filter(|m| m.contains("no layer that reaches"))
+        .count();
     let (_code, text, _stderr) = env.run_karen(&["validate"]);
-    assert!(
-        text.contains("runtime_command layers:")
-            && text.contains("claude: none")
-            && text.contains("opencode: opencode-native"),
-        "the text report carries the table: {text}"
-    );
+    assert!(text.contains("runtime_command layers:"), "{text}");
+    if cfg!(feature = "host") {
+        assert_eq!(
+            layers_of("opencode"),
+            Some(json!(["opencode-native", "terminal-host"]))
+        );
+        assert_eq!(layers_of("claude"), Some(json!(["terminal-host"])));
+        assert_eq!(layers_of("codex"), Some(json!(["terminal-host"])));
+        assert_eq!(unreached, 0, "every runtime has a layer: {issues:?}");
+        assert!(
+            text.contains("claude: terminal-host (only in a session started with `karen run`)")
+                && text.contains("opencode: opencode-native (when the bridge plugin is current"),
+            "the text report says what each layer needs: {text}"
+        );
+    } else {
+        assert_eq!(layers_of("opencode"), Some(json!(["opencode-native"])));
+        assert_eq!(layers_of("claude"), Some(json!([])));
+        assert_eq!(layers_of("codex"), Some(json!([])));
+        assert!(
+            issues.iter().any(|m| m.contains(
+                "has no layer that reaches claude, codex sessions, so `compact-it` will log `undelivered:no-layer` there"
+            )),
+            "validate must name every runtime nothing reaches, once: {issues:?}"
+        );
+        assert_eq!(unreached, 1, "one warning, not one per runtime: {issues:?}");
+        assert!(
+            text.contains("claude: none") && text.contains("opencode: opencode-native"),
+            "the text report carries the table: {text}"
+        );
+    }
 }
 
 #[test]

@@ -11,7 +11,9 @@
 //! hooks and gates and none of this.
 
 pub mod console;
+pub mod delivery;
 pub mod endpoint;
+pub mod idle;
 pub mod program;
 pub mod session;
 pub mod terminal;

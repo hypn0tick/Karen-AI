@@ -16,23 +16,25 @@
 
 use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use super::console;
+use super::delivery::{self, Queue, Tuning};
 use super::endpoint::{
     self, ENV_ENDPOINT, ENV_PID, ENV_RUNTIME, ENV_TOKEN, EndpointError, Handler, HostStatus,
     Request, Response,
 };
 use super::program;
-use super::terminal::Terminal;
-use crate::engine::runtime_command::is_typeable;
+use super::terminal::{ScreenDump, Terminal};
+use crate::engine::runtime_command::{is_typeable, status};
+use crate::policy::{Roots, loader::HostConfig};
 
-/// How long between the text of an injected line and its Enter. A TUI that treats a burst of input
-/// as a paste would otherwise take the Enter for part of the paste and never submit.
-const ENTER_DELAY: Duration = Duration::from_millis(150);
+/// How often the delivery worker looks at the screen.
+const DELIVERY_POLL: Duration = Duration::from_millis(100);
 /// How long output may stay silent before the runtime's last words are considered delivered.
 const DRAIN_QUIET: Duration = Duration::from_millis(150);
 /// The most she waits for the last words.
@@ -58,6 +60,9 @@ pub struct RunOptions {
     /// The program to start: `claude`, `codex`, `opencode`, or any other command line tool.
     pub program: OsString,
     pub args: Vec<OsString>,
+    /// The runtime to record the program as (`KAREN_HOST_RUNTIME`) when its file name is not the
+    /// runtime's name: a wrapper script, a renamed binary. Unset, the program's file stem.
+    pub name: Option<String>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -72,6 +77,8 @@ struct Host {
     writer: Mutex<Box<dyn Write + Send>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     last_output: Mutex<Instant>,
+    queue: Arc<Queue>,
+    enter_delay: Duration,
 }
 
 impl Host {
@@ -85,31 +92,75 @@ impl Host {
         writer.flush()
     }
 
-    /// Type `text` and press Enter. One printable line only: a control character, or a newline,
-    /// would be a keystroke she was not asked to make.
-    fn type_line(&self, text: &str) -> Response {
+    /// Why `text` is not a line she will type, or `None` when it is: one printable line, not blank.
+    /// A control character, or a newline, would be a keystroke she was not asked to make.
+    fn refusal(text: &str) -> Option<Response> {
         if text.trim().is_empty() {
-            return Response::refused("nothing to type");
+            return Some(Response::refused("nothing to type"));
         }
         if !is_typeable(text) {
-            return Response::refused(
+            return Some(Response::refused(
                 "one printable line only: no control characters, no newlines, at most 1000 characters",
-            );
+            ));
         }
+        None
+    }
+
+    /// Type `text`, wait out the Enter delay, press Enter. The writer stays locked throughout, so
+    /// nobody's typing lands in the middle of the line.
+    fn press_line(&self, text: &str) -> std::io::Result<()> {
         let mut writer = lock(&self.writer);
-        let sent = writer
-            .write_all(text.as_bytes())
-            .and_then(|()| writer.flush())
-            .map(|()| std::thread::sleep(ENTER_DELAY))
-            .and_then(|()| writer.write_all(b"\r"))
-            .and_then(|()| writer.flush());
-        match sent {
+        writer.write_all(text.as_bytes())?;
+        writer.flush()?;
+        std::thread::sleep(self.enter_delay);
+        writer.write_all(b"\r")?;
+        writer.flush()
+    }
+
+    /// Type `text` and press Enter, now.
+    fn type_line(&self, text: &str) -> Response {
+        if let Some(refusal) = Self::refusal(text) {
+            return refusal;
+        }
+        match self.press_line(text) {
             Ok(()) => Response {
                 typed: Some(text.chars().count()),
                 ..Response::ok()
             },
             Err(why) => Response::refused(format!("the terminal would not take it: {why}")),
         }
+    }
+
+    /// Join the queue; the worker types it when the session is idle.
+    fn deliver(&self, text: &str, meta: &endpoint::DeliveryMeta) -> Response {
+        if let Some(refusal) = Self::refusal(text) {
+            return refusal;
+        }
+        match self.queue.push(text.to_string(), meta.clone()) {
+            Some(place) => Response {
+                queued: Some(place),
+                ..Response::ok()
+            },
+            None => Response::refused("the queue is full"),
+        }
+    }
+}
+
+impl delivery::Session for Host {
+    fn runtime(&self) -> &str {
+        &self.runtime
+    }
+
+    fn screen(&self) -> ScreenDump {
+        lock(&self.terminal).dump()
+    }
+
+    fn quiet(&self) -> Duration {
+        Host::quiet(self)
+    }
+
+    fn press(&self, text: &str) -> Result<(), String> {
+        self.press_line(text).map_err(|why| why.to_string())
     }
 }
 
@@ -126,6 +177,7 @@ impl Handler for Host {
                         rows: dump.rows,
                         cols: dump.cols,
                         quiet_ms: u64::try_from(self.quiet().as_millis()).unwrap_or(u64::MAX),
+                        queued: self.queue.len(),
                     }),
                     ..Response::ok()
                 }
@@ -135,6 +187,7 @@ impl Handler for Host {
                 ..Response::ok()
             },
             Request::Type { text } => self.type_line(text),
+            Request::Deliver { text, meta } => self.deliver(text, meta),
         }
     }
 }
@@ -185,14 +238,26 @@ fn pump_input(host: &Arc<Host>) {
 fn follow_size(host: &Arc<Host>, mut current: (u16, u16)) {
     loop {
         std::thread::sleep(RESIZE_POLL);
-        if let Some(size) = console::size()
-            && size != current
-        {
+        if let Some(size) = console::size().filter(|size| *size != current) {
             current = size;
             let _ = lock(&host.master).resize(size_of(size.0, size.1));
             lock(&host.terminal).resize(size.0, size.1);
         }
     }
+}
+
+/// The owner's `[host]` settings: the user layer's alone, and the defaults when it cannot be read.
+/// A policy that fails to load must not stop a runtime from starting.
+fn host_config() -> HostConfig {
+    let roots = Roots {
+        user: Some(crate::home::user_policies()).filter(|path| path.is_dir()),
+        project: None,
+        explicit: false,
+        found_by: None,
+    };
+    crate::policy::load_roots(&roots)
+        .map(|set| set.config.host)
+        .unwrap_or_default()
 }
 
 /// Host `options.program` until it exits, and return its exit code.
@@ -205,7 +270,11 @@ pub fn run(options: &RunOptions) -> Result<i32, RunError> {
     let path = std::env::var_os("PATH");
     let launch = program::launch(&options.program, path.as_deref())
         .ok_or_else(|| RunError::NotFound(options.program.to_string_lossy().into_owned()))?;
-    let runtime = program::runtime_name(&options.program);
+    let runtime = options
+        .name
+        .clone()
+        .unwrap_or_else(|| program::runtime_name(&options.program));
+    let config = host_config();
 
     let (rows, cols) = console::size().unwrap_or((24, 80));
     let pair = native_pty_system()
@@ -251,9 +320,26 @@ pub fn run(options: &RunOptions) -> Result<i32, RunError> {
         writer: Mutex::new(writer),
         master: Mutex::new(pair.master),
         last_output: Mutex::new(Instant::now()),
+        queue: Arc::new(Queue::default()),
+        enter_delay: Duration::from_millis(config.enter_delay_ms),
     });
 
     endpoint::serve(listener, endpoint.token.clone(), host.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let sink = delivery::log_sink();
+    {
+        let (session, queue) = (
+            Arc::clone(&host) as Arc<dyn delivery::Session>,
+            Arc::clone(&host.queue),
+        );
+        let (sink, stop) = (Arc::clone(&sink), Arc::clone(&stop));
+        let tuning = Tuning {
+            quiet: Duration::from_millis(config.quiet_ms),
+            timeout: Duration::from_secs(config.timeout_secs),
+            poll: DELIVERY_POLL,
+        };
+        std::thread::spawn(move || delivery::run_worker(&session, &queue, tuning, &sink, &stop));
+    }
     let raw_mode = console::enter_raw();
 
     let output = {
@@ -276,6 +362,8 @@ pub fn run(options: &RunOptions) -> Result<i32, RunError> {
     while host.quiet() < DRAIN_QUIET && waited.elapsed() < DRAIN_MAX {
         std::thread::sleep(Duration::from_millis(25));
     }
+    stop.store(true, Ordering::SeqCst);
+    delivery::drain(&host.queue, &sink, status::HOST_EXITED);
     drop(raw_mode);
     endpoint.close();
     // The reader ends by itself where the pty reports the end of output, and not at all under

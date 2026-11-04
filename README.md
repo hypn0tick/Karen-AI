@@ -357,9 +357,9 @@ Arguments render `{gate}` and `{facts.<path>}` and nothing else: the agent's own
 
 Every attempt ends as exactly one status, rides the verdict (`karen evaluate --json` shows `runtime_commands`) and lands as one JSON line — `time`, `session`, `gate`, `runtime`, `command`, `arguments`, `layer`, `status` — in `<Karen home>/logs/karen-runtime.jsonl`, rotated like the notify log. The log keeps the arguments as the gate wrote them, placeholders unexpanded: what a fact rendered into them is data about the session, and the ledger does not keep it. A rehearsal (`karen evaluate`) files nothing. A command no layer can carry is logged `undelivered:no-layer` and `karen validate` says which configured runtimes have no layer. Never silent.
 
-OpenCode has a layer today: its bridge types through the server's own API once the session is idle — `/compact` as `session.summarize` (the TUI's own call, so no TUI is needed), a custom command as `session.command`, `/new` and `/share` through `tui.executeCommand` — and files what became of each in the same log. Claude Code and Codex have none yet.
+OpenCode has a layer today: its bridge types through the server's own API once the session is idle — `/compact` as `session.summarize` (the TUI's own call, so no TUI is needed), a custom command as `session.command`, `/new` and `/share` through `tui.executeCommand` — and files what became of each in the same log.
 
-Claude Code and Codex can only be reached through their terminal, so `karen run claude` (or `codex`, or any program on `PATH`) hosts the runtime in a pseudo-terminal Karen owns and serves a local control endpoint that the runtime's hooks find through the `KAREN_HOST_*` variables it inherits. That is the host; the layer that waits for an idle session and types is the next piece, so for now those two still log `undelivered:no-layer`. The host is the default-on cargo feature `host`; `--no-default-features` is the lean hook-and-gate build.
+Claude Code and Codex can only be reached through their terminal, so `karen run claude` (or `codex`, or any program on `PATH`) hosts the runtime in a pseudo-terminal Karen owns and serves a local control endpoint that the runtime's hooks find through the `KAREN_HOST_*` variables it inherits. A `runtime_command` for such a session joins the host's queue and is typed when the session is idle (nothing drawn for 400 ms, the prompt up and empty, no turn running), one per idle, and a line that finds no idle moment in two minutes is logged `undelivered:timeout`. A half-typed prompt is never typed into. A Claude Code or Codex session that was not started under `karen run` is still `undelivered:no-layer`. The host is the default-on cargo feature `host`; `--no-default-features` is the lean hook-and-gate build.
 
 Which layer each runtime gets, the host's endpoint and threat model, and the whole status list: [`docs/runtime-control.md`](docs/runtime-control.md).
 
@@ -628,7 +628,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-360 tests passing (65 unit, 20 integration, 275 e2e — zero ignored). The Karen
+390 tests passing (84 unit, 20 integration, 286 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

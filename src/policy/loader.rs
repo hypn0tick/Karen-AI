@@ -21,6 +21,8 @@ pub struct Config {
     pub facts: FactsConfig,
     #[serde(default)]
     pub actions: ActionsConfig,
+    #[serde(default)]
+    pub host: HostConfig,
 }
 
 /// The runtimes `[actions] runtimes` may name, and the default set: every one
@@ -59,6 +61,86 @@ impl Default for ActionsConfig {
 
 fn default_runtimes() -> Vec<String> {
     RUNTIMES.iter().map(|r| (*r).to_string()).collect()
+}
+
+/// How `karen run` waits for a session and types into it. The user layer's alone, like the lists
+/// above: how a keyboard behaves is the owner's to tune, not a repository's. Out-of-range values
+/// are named by `karen validate` and replaced by the default.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostConfig {
+    /// The pause between a typed line and its Enter, so a terminal UI that treats a burst of
+    /// input as a paste does not take the Enter for part of it. 150 is a guess about those UIs,
+    /// not a measurement: this is where a measured value goes. 0 to 5000.
+    #[serde(default = "HostConfig::default_enter_delay_ms")]
+    pub enter_delay_ms: u64,
+    /// How long the session must have drawn nothing before it counts as idle. 50 to 10000.
+    #[serde(default = "HostConfig::default_quiet_ms")]
+    pub quiet_ms: u64,
+    /// How long a command waits for an idle session before it is given up on as
+    /// `undelivered:timeout`. 1 to 3600.
+    #[serde(default = "HostConfig::default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+impl HostConfig {
+    const ENTER_DELAY_MS: std::ops::RangeInclusive<u64> = 0..=5_000;
+    const QUIET_MS: std::ops::RangeInclusive<u64> = 50..=10_000;
+    const TIMEOUT_SECS: std::ops::RangeInclusive<u64> = 1..=3_600;
+
+    const fn default_enter_delay_ms() -> u64 {
+        150
+    }
+    const fn default_quiet_ms() -> u64 {
+        400
+    }
+    const fn default_timeout_secs() -> u64 {
+        120
+    }
+
+    /// The values in range; each one that is not is named and replaced by its default.
+    fn bounded(mut self, mut warn: impl FnMut(String)) -> Self {
+        for (key, value, range, default) in [
+            (
+                "enter_delay_ms",
+                &mut self.enter_delay_ms,
+                Self::ENTER_DELAY_MS,
+                Self::default_enter_delay_ms(),
+            ),
+            (
+                "quiet_ms",
+                &mut self.quiet_ms,
+                Self::QUIET_MS,
+                Self::default_quiet_ms(),
+            ),
+            (
+                "timeout_secs",
+                &mut self.timeout_secs,
+                Self::TIMEOUT_SECS,
+                Self::default_timeout_secs(),
+            ),
+        ] {
+            if !range.contains(value) {
+                warn(format!(
+                    "ignores [host] {key} = {value}: it must be {} to {}, so the default {default} stands",
+                    range.start(),
+                    range.end()
+                ));
+                *value = default;
+            }
+        }
+        self
+    }
+}
+
+impl Default for HostConfig {
+    fn default() -> Self {
+        Self {
+            enter_delay_ms: Self::default_enter_delay_ms(),
+            quiet_ms: Self::default_quiet_ms(),
+            timeout_secs: Self::default_timeout_secs(),
+        }
+    }
 }
 
 /// What the environment facts look for. `tools` names the binaries `facts.tools`
@@ -771,6 +853,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
 
     gates.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
     let actions = user.actions(&mut issues);
+    let host = user.host(&mut issues);
     warn_off_allowlist(&gates, &user.env, &mut issues);
     warn_key_fields(&gates, &mut issues);
     warn_unknown_facts(&gates, &mut issues);
@@ -790,6 +873,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
     // or reach.
     config.facts.env = user.env;
     config.actions = actions;
+    config.host = host;
     PolicySet {
         gates,
         rules,
@@ -826,6 +910,8 @@ struct UserOnly {
     runtime_commands: Vec<String>,
     /// `None` when the user layer does not set it: the default set applies.
     runtimes: Option<Vec<String>>,
+    /// The user layer's own `[host]` table, as written.
+    host: Option<toml::Value>,
 }
 
 impl UserOnly {
@@ -835,11 +921,24 @@ impl UserOnly {
         let env = list_in(table, "facts", "env");
         let commands = list_in(table, "actions", "runtime_commands");
         let runtimes = list_in(table, "actions", "runtimes");
+        let host = table.get("host").filter(|host| host.is_table()).cloned();
         if matches!(layer, Layer::User) {
             self.env = env.unwrap_or_default();
             self.runtime_commands = commands.unwrap_or_default();
             self.runtimes = runtimes;
+            self.host = host;
             return;
+        }
+        if host
+            .as_ref()
+            .and_then(toml::Value::as_table)
+            .is_some_and(|t| !t.is_empty())
+        {
+            issues.push(MergeIssue {
+                layer,
+                message: "sets [host] — only the user layer's is read, this one is ignored".into(),
+                kind: IssueKind::Warning,
+            });
         }
         for (section, key, names) in [
             ("facts", "env", env),
@@ -857,6 +956,27 @@ impl UserOnly {
                 ),
                 kind: IssueKind::Warning,
             });
+        }
+    }
+
+    /// The `[host]` she enforces: the user layer's, out-of-range values replaced and named.
+    fn host(&self, issues: &mut Vec<MergeIssue>) -> HostConfig {
+        let mut warn = |message: String| {
+            issues.push(MergeIssue {
+                layer: Layer::User,
+                message,
+                kind: IssueKind::Warning,
+            });
+        };
+        let Some(table) = &self.host else {
+            return HostConfig::default();
+        };
+        match table.clone().try_into::<HostConfig>() {
+            Ok(host) => host.bounded(warn),
+            Err(error) => {
+                warn(format!("ignores [host]: {}", error.message()));
+                HostConfig::default()
+            }
         }
     }
 

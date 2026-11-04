@@ -15,9 +15,14 @@
 //!   control character or run past [`MAX_LINE`]. A newline typed into a prompt
 //!   is a second prompt, and an escape sequence is a keystroke.
 //! - `undelivered:no-layer`: allowed, and nothing reaches this session.
+//! - `undelivered:host-unreachable` / `undelivered:host-refused`: the terminal
+//!   host (`karen run`) was named by the session's environment and did not answer,
+//!   or answered that it would not take the line.
 //! - `handed-off`: allowed, and a layer took it (named in `layer`). The layer
 //!   delivers after her process has exited, so this is the last thing she can
-//!   know; the layer writes what became of it to the same log.
+//!   know; the layer writes what became of it to the same log (the host files
+//!   `sent`, `undelivered:timeout`, `undelivered:host-exited` and
+//!   `undelivered:type-failed`).
 //!
 //! A delivery is attempted on any runtime that has a layer. The user layer's
 //! `[actions] runtimes` only scopes what `karen validate` reports: a list
@@ -50,6 +55,13 @@ pub mod status {
     pub const UNSAFE_TEXT: &str = "undelivered:unsafe-text";
     pub const NO_LAYER: &str = "undelivered:no-layer";
     pub const HANDED_OFF: &str = "handed-off";
+    pub const HOST_UNREACHABLE: &str = "undelivered:host-unreachable";
+    pub const HOST_REFUSED: &str = "undelivered:host-refused";
+    /// Filed by a layer after the fact, not decided by her.
+    pub const SENT: &str = "sent";
+    pub const TIMEOUT: &str = "undelivered:timeout";
+    pub const HOST_EXITED: &str = "undelivered:host-exited";
+    pub const TYPE_FAILED: &str = "undelivered:type-failed";
 }
 
 /// The layers a command can ride, by the name a log line carries.
@@ -58,6 +70,8 @@ pub mod layer {
     /// command through `session.command`, `/compact` through
     /// `session.summarize`, a TUI built-in through `tui.executeCommand`.
     pub const OPENCODE_NATIVE: &str = "opencode-native";
+    /// A session run under `karen run`: the host types into its terminal once it is idle.
+    pub const TERMINAL_HOST: &str = "terminal-host";
 }
 
 /// Whether `text` can be typed as part of one prompt line: no control
@@ -82,9 +96,62 @@ pub fn is_command(text: &str) -> bool {
 /// first. A session reaches one of them or none, and none is logged.
 #[must_use]
 pub fn layers_for(runtime: &str) -> &'static [&'static str] {
+    #[cfg(feature = "host")]
+    const TERMINAL: &[&str] = &[layer::TERMINAL_HOST];
+    #[cfg(not(feature = "host"))]
+    const TERMINAL: &[&str] = &[];
+    #[cfg(feature = "host")]
+    const OPENCODE: &[&str] = &[layer::OPENCODE_NATIVE, layer::TERMINAL_HOST];
+    #[cfg(not(feature = "host"))]
+    const OPENCODE: &[&str] = &[layer::OPENCODE_NATIVE];
     match runtime {
-        "opencode" => &[layer::OPENCODE_NATIVE],
+        "opencode" => OPENCODE,
+        "claude" | "codex" => TERMINAL,
         _ => &[],
+    }
+}
+
+/// What has to be true for a layer to reach a session, in words, for `karen validate`.
+#[must_use]
+pub fn reach_condition(layer: &str) -> &'static str {
+    match layer {
+        layer::OPENCODE_NATIVE => "when the bridge plugin is current (`karen setup opencode`)",
+        layer::TERMINAL_HOST => "only in a session started with `karen run`",
+        _ => "",
+    }
+}
+
+/// The host a session runs under, when the environment names one for this runtime: its endpoint
+/// and token. A host for another runtime is not this session's keyboard.
+#[cfg(feature = "host")]
+fn host_for(runtime: &str) -> Option<(String, String)> {
+    let target = crate::host::endpoint::from_env()?;
+    let hosted = std::env::var(crate::host::endpoint::ENV_RUNTIME).ok()?;
+    (hosted == runtime).then_some(target)
+}
+
+#[cfg(not(feature = "host"))]
+fn host_for(_runtime: &str) -> Option<(String, String)> {
+    None
+}
+
+/// Give the rendered line to the host. It answers at once with a place in its queue; what becomes of
+/// the line after that is the host's to file. A host that does not answer in time is unreachable.
+#[cfg(feature = "host")]
+fn hand_to_host(
+    target: (String, String),
+    text: String,
+    meta: crate::host::endpoint::DeliveryMeta,
+) -> &'static str {
+    use crate::host::endpoint::{Request, call};
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(call(&target.0, &target.1, &Request::Deliver { text, meta }));
+    });
+    match receiver.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(Ok(answer)) if answer.ok => status::HANDED_OFF,
+        Ok(Ok(_)) => status::HOST_REFUSED,
+        _ => status::HOST_UNREACHABLE,
     }
 }
 
@@ -112,10 +179,26 @@ pub fn attempt(
     actions: &ActionsConfig,
     rehearsal: bool,
 ) -> CommandOutcome {
-    let decision = decide(gate, command, arguments, req, actions);
+    let runtime = facts::runtime(&req.raw);
+    let host = host_for(&runtime);
+    #[cfg_attr(not(feature = "host"), allow(unused_mut))]
+    let mut decision = decide(gate, command, arguments, req, actions, host.is_some());
+    #[cfg(feature = "host")]
+    if let (Some(target), Some(line), false) = (host, decision.line.take(), rehearsal) {
+        if decision.layer == Some(layer::TERMINAL_HOST) {
+            let meta = crate::host::endpoint::DeliveryMeta {
+                session: req.session_id.clone(),
+                gate: gate.id.clone(),
+                runtime: runtime.clone(),
+                command: command.to_string(),
+                arguments: arguments.map(str::to_string),
+            };
+            decision.status = hand_to_host(target, line, meta);
+        }
+    }
     let outcome = CommandOutcome {
         gate: gate.id.clone(),
-        runtime: facts::runtime(&req.raw),
+        runtime,
         command: command.to_string(),
         layer: decision.layer.map(str::to_string),
         status: decision.status.to_string(),
@@ -144,7 +227,11 @@ pub fn attempt(
 struct Decision {
     status: &'static str,
     layer: Option<&'static str>,
+    /// What the caller's own layer is to type (the `OpenCode` bridge types for itself).
     typed: Option<TypedCommand>,
+    /// The whole line, for a layer she hands it to herself (the terminal host).
+    #[cfg_attr(not(feature = "host"), allow(dead_code))]
+    line: Option<String>,
 }
 
 impl Decision {
@@ -154,6 +241,7 @@ impl Decision {
             status,
             layer: None,
             typed: None,
+            line: None,
         }
     }
 }
@@ -166,6 +254,7 @@ fn decide(
     arguments: Option<&str>,
     req: &EngineRequest,
     actions: &ActionsConfig,
+    hosted: bool,
 ) -> Decision {
     if gate.layer != Layer::User {
         return Decision::stop(status::NOT_USER_LAYER);
@@ -181,18 +270,35 @@ fn decide(
         return Decision::stop(status::UNSAFE_TEXT);
     }
     let offered = offered(&req.raw);
-    let carrier = layers_for(&facts::runtime(&req.raw))
-        .iter()
-        .copied()
-        .find(|layer| offered.contains(layer));
+    let carrier =
+        layers_for(&facts::runtime(&req.raw))
+            .iter()
+            .copied()
+            .find(|layer| match *layer {
+                layer::OPENCODE_NATIVE => offered.contains(layer),
+                layer::TERMINAL_HOST => hosted,
+                _ => false,
+            });
+    let rendered = rendered.unwrap_or_default();
     match carrier {
+        Some(layer::TERMINAL_HOST) => Decision {
+            status: status::HANDED_OFF,
+            layer: Some(layer::TERMINAL_HOST),
+            typed: None,
+            line: Some(if rendered.is_empty() {
+                command.to_string()
+            } else {
+                format!("{command} {rendered}")
+            }),
+        },
         Some(layer) => Decision {
             status: status::HANDED_OFF,
             layer: Some(layer),
             typed: Some(TypedCommand {
                 command: command.to_string(),
-                arguments: rendered.unwrap_or_default(),
+                arguments: rendered,
             }),
+            line: None,
         },
         None => Decision::stop(status::NO_LAYER),
     }
@@ -229,10 +335,19 @@ mod tests {
     }
 
     #[test]
-    fn opencode_has_its_native_layer_and_the_terminal_runtimes_have_none_yet() {
-        assert_eq!(layers_for("opencode"), [layer::OPENCODE_NATIVE]);
-        for runtime in ["claude", "codex", "unknown"] {
-            assert_eq!(layers_for(runtime).len(), 0, "{runtime}");
+    fn each_runtime_has_the_layers_that_can_reach_it() {
+        assert_eq!(layers_for("unknown").len(), 0);
+        if cfg!(feature = "host") {
+            assert_eq!(layers_for("claude"), [layer::TERMINAL_HOST]);
+            assert_eq!(layers_for("codex"), [layer::TERMINAL_HOST]);
+            assert_eq!(
+                layers_for("opencode"),
+                [layer::OPENCODE_NATIVE, layer::TERMINAL_HOST],
+                "the native layer is preferred"
+            );
+        } else {
+            assert_eq!(layers_for("claude").len(), 0);
+            assert_eq!(layers_for("opencode"), [layer::OPENCODE_NATIVE]);
         }
     }
 

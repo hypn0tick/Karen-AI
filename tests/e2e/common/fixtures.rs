@@ -394,6 +394,11 @@ impl TestEnv {
             .env_remove("CODEX_HOME")
             .env_remove("OPENCODE_CONFIG_DIR")
             .env_remove("XDG_CONFIG_HOME")
+            // A suite run from inside a `karen run` session must not type into that session.
+            .env_remove("KAREN_HOST_ENDPOINT")
+            .env_remove("KAREN_HOST_TOKEN")
+            .env_remove("KAREN_HOST_RUNTIME")
+            .env_remove("KAREN_HOST_PID")
             // Don't set KAREN_DEV for hook tests - fail-open should return {}
             .args(args);
         cmd
@@ -408,6 +413,11 @@ impl TestEnv {
             .env_remove("CODEX_HOME")
             .env_remove("OPENCODE_CONFIG_DIR")
             .env_remove("XDG_CONFIG_HOME")
+            // A suite run from inside a `karen run` session must not type into that session.
+            .env_remove("KAREN_HOST_ENDPOINT")
+            .env_remove("KAREN_HOST_TOKEN")
+            .env_remove("KAREN_HOST_RUNTIME")
+            .env_remove("KAREN_HOST_PID")
             .env("KAREN_DEV", "1")
             .args(args);
         cmd
@@ -415,8 +425,20 @@ impl TestEnv {
 
     /// Run karen hook with stdin input
     pub fn run_hook(&self, input: &str, args: &[&str]) -> (i32, String, String) {
+        self.run_hook_with_env(input, args, &[])
+    }
+
+    /// Run karen hook with extra variables in the child's environment: what a hook
+    /// process inherits from the runtime it was started by.
+    pub fn run_hook_with_env(
+        &self,
+        input: &str,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> (i32, String, String) {
         let mut cmd = self.karen_cmd(&["hook"]);
         cmd.args(args)
+            .envs(envs.iter().copied())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

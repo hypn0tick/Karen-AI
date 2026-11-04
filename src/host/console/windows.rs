@@ -65,9 +65,7 @@ pub fn enter_on(input: isize, output: Option<isize>) -> Option<Held> {
         return None;
     }
     let mut handles = vec![(input, input_original)];
-    if let Some(output) = output
-        && let Some(original) = mode_of(output)
-    {
+    if let Some((output, original)) = output.and_then(|o| mode_of(o).map(|m| (o, m))) {
         let wanted = original | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
         if set_mode(output, wanted) {
             handles.push((output, original));
