@@ -1,0 +1,43 @@
+// Example 13 — hold once, pass the identical retry. Teaches: `key_fields`,
+// the gate author's own answer to "what counts as the same input?". A kill
+// is held the first time and goes through on the retry, however the agent
+// words its note or whatever timeout it tacks on; a different target is a
+// different kill and is held again. The Karen who lets you confirm a
+// decision, and does not let you confirm it by changing the subject.
+{
+  "id": "hold-hcom-kill-once",
+  "name": "Hold an agent kill once, pass the identical retry",
+  "description": "A kill is held once and goes through when the same command is run again; the shell's description and timeout are not part of the question.",
+  "event": "PreToolUse",
+  "tool": "Bash",
+  "priority": 60,
+  "enabled": true,
+  "tags": ["state", "confirmation", "key-fields"],
+
+  "match": {
+    "all": [
+      { "type": "command_regex", "pattern": "\\bhcom\\s+kill\\b" }
+    ]
+  },
+
+  "action": {
+    "type": "deny_once_then_warn",
+    "first_reason": "This kills an agent. Confirm the name, then run it again.",
+    "second_reason": "Kill confirmed by the retry."
+  },
+
+  "state": {
+    // track: input — each distinct input is counted on its own, so every new
+    // kill is held once. Without this line the whole session gets one hold.
+    "track": "input",
+    "key": "hcom-kill",
+    // key_fields — what "the same input" means for this gate: the command,
+    // and only the command. Leave it out and she counts a shell call without
+    // its free-text description, but a changed timeout or workdir would still
+    // be a new call. Each path resolves like a field_* condition's (the tool
+    // input first, then the payload; dots walk nested keys), and a path the
+    // call leaves out counts as missing, never as empty. Needs track: input;
+    // `karen validate` tells you when it does not have it.
+    "key_fields": ["command"]
+  }
+}

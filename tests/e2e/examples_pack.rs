@@ -40,11 +40,11 @@ fn examples_env() -> TestEnv {
             copied += 1;
         }
     }
-    // The pack ships fifteen files — twelve fundamentals (one holding
+    // The pack ships sixteen files — thirteen fundamentals (one holding
     // two gates) and three advanced merges (holding two, two, and
     // three). If this number changes, she wants to know about it here
     // first — she counts, then counts again.
-    assert_eq!(copied, 15, "expected all fifteen example gate files");
+    assert_eq!(copied, 16, "expected all sixteen example gate files");
 
     std::fs::copy(
         examples_root.join("rule-00-briefing.md"),
@@ -122,7 +122,7 @@ fn post_tool_write(session: &str, content: &str) -> String {
 
 #[test]
 fn karen_examples_pack_validates_exactly_as_shipped() {
-    // The whole pack, compiled and counted: twenty gates across fifteen
+    // The whole pack, compiled and counted: twenty-one gates across sixteen
     // files, one delivered rule. She grades the curriculum before she
     // teaches it. When the pack grows, update the count here — the
     // count is a feature, not a chore.
@@ -137,8 +137,8 @@ fn karen_examples_pack_validates_exactly_as_shipped() {
         .filter(|g| g["layer"] == "project")
         .count();
     assert_eq!(
-        shipped, 20,
-        "the pack ships exactly twenty gates — she counted twice"
+        shipped, 21,
+        "the pack ships exactly twenty-one gates — she counted twice"
     );
     assert_eq!(
         data["rule_count"].as_u64(),
@@ -169,6 +169,38 @@ fn karen_examples_jq_teaches_exactly_once() {
     let (code, second, _) = env.run_hook(&pretool("ex-jq", r"jq '.x' config.yaml"), &[]);
     assert_eq!(code, 0);
     assert_hook_warned_retry(&second, Some("saw the whole thing"));
+}
+
+#[test]
+fn karen_examples_kill_is_held_once_and_the_identical_retry_passes() {
+    // `key_fields: ["command"]`: the retry may reword its description and
+    // add a timeout and it is still the same kill; another target is not.
+    let env = examples_env();
+    let kill = |command: &str, extra: serde_json::Value| {
+        let mut tool_input = serde_json::json!({ "command": command });
+        for (key, value) in extra.as_object().expect("object") {
+            tool_input[key] = value.clone();
+        }
+        let input = hook_input("PreToolUse", "ex-kill", Some("Bash"), tool_input, None);
+        let (code, stdout, _) = env.run_hook(&input, &[]);
+        assert_eq!(code, 0);
+        stdout
+    };
+    let first = kill(
+        "hcom kill zede",
+        serde_json::json!({ "description": "stop the zede agent" }),
+    );
+    assert_hook_deny_once_first(&first, Some("Confirm the name"));
+    let retry = kill(
+        "hcom kill zede",
+        serde_json::json!({ "description": "end zede", "timeout": 30000 }),
+    );
+    assert_hook_warned_retry(&retry, Some("Kill confirmed by the retry"));
+    let other = kill(
+        "hcom kill abel",
+        serde_json::json!({ "description": "end zede" }),
+    );
+    assert_hook_deny_once_first(&other, Some("Confirm the name"));
 }
 
 #[test]

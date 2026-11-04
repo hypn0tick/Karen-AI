@@ -1,10 +1,10 @@
 # Example Gates — the starter pack
 
-**Fifteen heavily-commented gates: twelve fundamentals, three advanced merges. Plus a minimal `config.toml` and one example rule.** They are not the author's rules — they are his lectures, yours to assign. Copy what you like into `~/.karen/policies/gates/` (every project) or a project's `.karen/policies/gates/`, adjust to taste, and run `karen validate`. The Karen who ships the desk, the curriculum, and none of her opinions about your house.
+**Sixteen heavily-commented gates: thirteen fundamentals, three advanced merges. Plus a minimal `config.toml` and one example rule.** They are not the author's rules — they are his lectures, yours to assign. Copy what you like into `~/.karen/policies/gates/` (every project) or a project's `.karen/policies/gates/`, adjust to taste, and run `karen validate`. The Karen who ships the desk, the curriculum, and none of her opinions about your house.
 
 Two things worth noticing before you copy anything:
 
-1. **Every file is `.json` — with comments in it.** That's not a typo; the loader parses all extensions through the same engine, and comments in `.json` files are the house style. The permissiveness claim in the README ships fifteen proofs of itself in this directory.
+1. **Every file is `.json` — with comments in it.** That's not a typo; the loader parses all extensions through the same engine, and comments in `.json` files are the house style. The permissiveness claim in the README ships sixteen proofs of itself in this directory.
 2. **Every regex here avoids lookaheads.** The engine uses Rust's regex crate, which doesn't have them — exclusion is the `none` block, and it's a first-class citizen. When you write your own gates, reach for `none` instead of `(?!...)`, or she will hand you a `POLICY_INVALID` envelope and a look.
 
 ## The fundamentals (one mechanism each)
@@ -23,6 +23,7 @@ Two things worth noticing before you copy anything:
 | `rehearsal-vs-performance.json` | allow + ask | multi-gate files, the `none` block, and the precedence law (below) |
 | `scope-creep-warner.json` | deny_once_then_warn | `prompt_regex` round two — she enforces process, not just commands |
 | `friday-deploy-freeze.json` | deny (disabled) | the `always` matcher, the `enabled` flag, and one honest engine limit |
+| `hold-hcom-kill-once.json` | deny_once_then_warn | `state.key_fields`: hold a call once, pass the identical retry, and say what "identical" means |
 
 ## The advanced (concepts merged)
 
