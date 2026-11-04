@@ -1,0 +1,4 @@
+# Test fixtures are recorded bytes (terminal screens drawn with \n rows, payloads, policy files):
+# a checkout must not rewrite their line endings, or tests that match a row see \r\n and fail on a
+# Windows checkout with core.autocrlf=true.
+tests/fixtures/** -text
