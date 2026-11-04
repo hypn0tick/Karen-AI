@@ -129,7 +129,7 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
             "runtime" => Some(Value::from(runtime.clone())),
             "mcp_servers" => Some(Value::from(join(mcp_servers(&runtime, req.cwd.as_deref())))),
             "tools" => Some(Value::from(join(tools_on_path(&set.config.facts.tools)))),
-            "git_uncommitted" => Some(Value::from(git_uncommitted(req.cwd.as_deref()))),
+            "git_uncommitted" => git_uncommitted(req.cwd.as_deref()).map(Value::from),
             // The session's own id, as the runtime said it: the payload's word,
             // absent when the payload carries none.
             "session_id" => req
@@ -563,31 +563,37 @@ fn tools_on_path(wanted: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
-/// `git status --porcelain` for the working directory, one path per line; empty
-/// outside a repository.
-fn git_uncommitted(cwd: Option<&str>) -> String {
-    let Some(cwd) = cwd else {
-        return String::new();
-    };
-    let Ok(out) = Command::new("git")
-        .args(["-C", cwd, "status", "--porcelain"])
+/// `git status --porcelain` for the working directory, one path per line. A
+/// clean repository reads as the empty string; no working directory, no
+/// repository there, or a git that will not answer is absent, because an
+/// empty string would claim a clean tree she never looked at.
+fn git_uncommitted(cwd: Option<&str>) -> Option<String> {
+    let out = Command::new("git")
+        .args(["-C", cwd?, "status", "--porcelain"])
         .output()
-    else {
-        return String::new();
-    };
+        .ok()?;
     if !out.status.success() {
-        return String::new();
+        return None;
     }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .take(GIT_LINES)
-        .collect::<Vec<_>>()
-        .join("\n")
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .take(GIT_LINES)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_uncommitted_is_absent_without_a_directory_or_a_repository() {
+        assert_eq!(git_uncommitted(None), None);
+        let nowhere = std::env::temp_dir().join("karen-no-such-directory-for-git");
+        assert_eq!(git_uncommitted(nowhere.to_str()), None);
+    }
 
     fn occupancy(tokens: u64, window: u64) -> Map<String, Value> {
         let mut facts = Map::new();

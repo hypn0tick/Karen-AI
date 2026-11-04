@@ -241,7 +241,7 @@ A gate can read what the session's runtime actually has instead of someone remem
 | `facts.runtime` | `claude`, `codex`, `opencode` or `unknown` | the hook command (`karen setup` writes `--runtime claude` or `--runtime codex` into every one); the OpenCode plugin says so in the payload; otherwise the transcript path, under `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when they are set |
 | `facts.mcp_servers` | comma-separated names of the enabled MCP servers | the runtime's own config files (Claude Code: `.claude.json` in `CLAUDE_CONFIG_DIR`, else `~/.claude.json`, the project's `.mcp.json`, and the plugins its settings enable; Codex: `config.toml` in `CODEX_HOME`, else `~/.codex`; OpenCode: `opencode.json` or `opencode.jsonc` in its global directory (`$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`), the project, `OPENCODE_CONFIG` and `OPENCODE_CONFIG_DIR`). Names only: server definitions can hold keys, and a gate never needs them |
 | `facts.tools` | comma-separated names from `[facts] tools` found on `PATH` | `PATH` |
-| `facts.git_uncommitted` | `git status --porcelain` for `cwd`, first 50 lines | git |
+| `facts.git_uncommitted` | `git status --porcelain` for `cwd`, first 50 lines; empty for a clean tree, absent outside a repository | git |
 | `facts.context_tokens` | the latest assistant turn's input plus both cache counts | Claude Code: the tail of the transcript the hook names (read backwards, growing to 8 MiB, because the last usage line can sit behind megabytes of tool output); Codex: the rollout's last `token_count` event; OpenCode: the bridge's payload, from the `message.updated` events it caches |
 | `facts.context_window` | the window that turn runs in | Codex: the same rollout's `model_context_window`; OpenCode: the bridge's payload; Claude Code: `[facts.context_window]` in `config.toml`, keyed by runtime — one model id runs at several windows, so she reports a configured number rather than guessing one |
 | `facts.context_ratio` | `context_tokens` over `context_window` | both of the above; **absent when either side is** |
@@ -589,7 +589,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-283 tests passing (40 unit, 20 integration, 223 e2e — zero ignored). The Karen
+285 tests passing (41 unit, 20 integration, 224 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

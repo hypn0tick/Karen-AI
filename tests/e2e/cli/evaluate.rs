@@ -393,6 +393,46 @@ fn karen_evaluate_file_older_than_counts_a_missing_or_stale_marker_as_due() {
 
 #[test]
 #[serial]
+fn karen_evaluate_git_uncommitted_is_absent_outside_a_repository_not_empty() {
+    // A clean tree is the empty string; no repository, or no directory, is
+    // absence. A gate that reads "empty" as "clean" must not match on a
+    // directory she never inspected.
+    let env = TestEnv::with_config(crate::e2e::common::DEFAULT_CONFIG, &[], &[]);
+    std::fs::write(
+        env.policies_dir.join("gates").join("clean.json"),
+        r#"{ "id": "clean-tree", "event": "Stop", "priority": 50, "match": { "all": [ { "type": "field_equals", "field": "facts.git_uncommitted", "value": "" } ] }, "action": { "type": "deny", "reason": "nothing to commit" } }"#,
+    )
+    .unwrap();
+    let verdict = |cwd: Option<&std::path::Path>| {
+        let mut payload = json!({ "hook_event_name": "Stop", "session_id": "git-absent" });
+        if let Some(cwd) = cwd {
+            payload["cwd"] = json!(cwd.display().to_string());
+        }
+        let (code, stdout, _stderr) = env.run_evaluate_stdin(&payload.to_string(), &["--json"]);
+        assert_exit_code(code, 0);
+        assert_json_ok(&stdout)
+    };
+    let repo = env.temp_dir.path().join("clean-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["init", "-q"])
+        .output()
+        .unwrap();
+    assert_evaluate_action(&verdict(Some(&repo)), "deny");
+    let plain = env.temp_dir.path().join("not-a-repo");
+    std::fs::create_dir_all(&plain).unwrap();
+    assert_evaluate_action(&verdict(Some(&plain)), "allow");
+    assert_evaluate_action(
+        &verdict(Some(&env.temp_dir.path().join("missing"))),
+        "allow",
+    );
+    assert_evaluate_action(&verdict(None), "allow");
+}
+
+#[test]
+#[serial]
 fn karen_evaluate_facts_name_the_mcp_servers_and_uncommitted_work() {
     // The Karen who checks what's in the building before quoting the fire code:
     // a gate keyed on facts.mcp_servers fires only where the runtime really has
