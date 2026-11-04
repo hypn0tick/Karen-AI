@@ -790,20 +790,28 @@ fn env_names(table: &toml::Table) -> Vec<String> {
 /// off duty; she names it at the door, not after the party.
 fn warn_off_allowlist(gates: &[Gate], user_env: &[String], issues: &mut Vec<MergeIssue>) {
     for gate in gates {
-        let off: Vec<&str> = gate
+        // Each variable once, however many conditions read it: a gate that
+        // matches and exempts the same name is one problem, not two.
+        let mut off: Vec<&str> = Vec::new();
+        for name in gate
             .matcher
             .fields()
             .chain(gate.state.as_ref().and_then(|s| s.field.as_deref()))
             .filter_map(|field| field.strip_prefix("facts.env."))
             .filter(|name| !user_env.iter().any(|allowed| allowed == name))
-            .collect();
+        {
+            if !off.contains(&name) {
+                off.push(name);
+            }
+        }
         if !off.is_empty() {
+            let named: Vec<String> = off.iter().map(|name| format!("facts.env.{name}")).collect();
             issues.push(MergeIssue {
                 layer: gate.layer,
                 message: format!(
-                    "`{}` matches facts.env.{} not on the user layer's allowlist — the fact stays absent",
+                    "`{}` matches {} not on the user layer's allowlist — the fact stays absent",
                     gate.id,
-                    off.join(", ")
+                    named.join(", ")
                 ),
                 kind: IssueKind::Warning,
             });

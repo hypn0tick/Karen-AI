@@ -279,3 +279,46 @@ fn karen_validate_names_a_project_env_allowlist_and_off_list_gates() {
         "validate must name the off-allowlist gate: {text:?}"
     );
 }
+
+#[test]
+#[serial]
+fn karen_validate_names_each_off_list_variable_once_with_its_prefix() {
+    // A gate that matches a variable and exempts the same one reads it twice;
+    // she names it once. A second variable gets its own full name too.
+    const TWO_VARS: &str = r#"{
+  "id": "env-twice",
+  "description": "Reads one variable twice and another once.",
+  "event": "PreToolUse",
+  "match": {
+    "all": [
+      { "type": "field_regex", "field": "facts.env.KAREN_TEST_FIRST", "pattern": "." },
+      { "type": "field_equals", "field": "facts.env.KAREN_TEST_SECOND", "value": "x" }
+    ],
+    "none": [ { "type": "field_equals", "field": "facts.env.KAREN_TEST_FIRST", "value": "y" } ]
+  },
+  "action": { "type": "deny", "reason": "identity matched" }
+}"#;
+    let env = TestEnv::with_config(
+        crate::e2e::common::DEFAULT_CONFIG,
+        &[GateFixture {
+            file: "env-twice.json",
+            content: TWO_VARS,
+        }],
+        &[],
+    );
+    let (code, stdout, _stderr) = env.run_karen(&["validate", "--json"]);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let messages: Vec<&str> = data["issues"]
+        .as_array()
+        .expect("issues array")
+        .iter()
+        .filter_map(|i| i["message"].as_str())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains(
+            "`env-twice` matches facts.env.KAREN_TEST_FIRST, facts.env.KAREN_TEST_SECOND not on"
+        )),
+        "each variable once, each with its prefix: {messages:?}"
+    );
+}
