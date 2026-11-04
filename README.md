@@ -249,6 +249,8 @@ A gate can read what the session's runtime actually has instead of someone remem
 | `facts.env.<NAME>` | the environment variable's value, read from Karen's own environment | **only** the names the user layer allowlisted in `[facts] env` (`~/.karen/policies/config.toml`) |
 | `facts.provider_error` | the provider's own last failure: an object carrying `message` (and Claude Code's `model`, as the entry carries it) | Claude Code: the transcript's last `isApiErrorMessage` entry; Codex: the rollout's last `error` event (`event_msg`/`error`, per the codex-rs source — `codex-rs/protocol/src/protocol.rs`, openai/codex @ ac4332c); OpenCode: the bridge caches `session.error` and carries it into the Stop review. **Absent when a later assistant entry succeeds** — a stale apology is not a fact |
 
+Where each fact comes from for each runtime, when it is absent, which source wins, and how to find out why a facts gate is silent: [`docs/session-facts.md`](docs/session-facts.md).
+
 `runtime`, `mcp_servers` and `tools` are cached for the session; `git_uncommitted` and the occupancy facts are read fresh on every call that needs them. An unreadable fact is absent, never zero: a closed Codex rollout is zstd and she does not decompress it, a missing transcript says nothing, and a gate matching a numeric condition on an absent fact stays quiet. The same goes for a transcript whose last usage line sits more than 8 MiB from the end: she stops reading there, the occupancy facts are absent, and a gate on them stays quiet on that transcript rather than guessing from an older line.
 
 The env allowlist is the user layer's and no other's: a project layer that sets `[facts] env` is ignored, because a merge that unions the lists would let repository content expose a variable the user never named — `karen validate` names the layer that tried. A gate matching `facts.env.<NAME>` off the allowlist can never fire; `karen validate` names that gate too. A payload's own `facts.env` never reaches a gate, an unset variable reads as absent (never the empty string), and a value is never logged or written to state — it exists only in the request the gate reads.
@@ -587,7 +589,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-280 tests passing (39 unit, 20 integration, 221 e2e — zero ignored). The Karen
+281 tests passing (40 unit, 20 integration, 221 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
@@ -622,6 +624,8 @@ src/
 ├── policy/              # loader, gate compiler, config — The Karen who loads
 ├── state/               # FileStore, MemoryStore, ReadOnlyStore — The Karen who remembers, and forgets on request
 └── types.rs             # shared types — The Karen who defines
+docs/                    # reference pages: layered roots, session facts — The Karen who writes it down
+examples/                # the starter pack: gates, annotated config, one rule — The Karen who ships the curriculum
 ROADMAP.md               # audited direction — The Karen who approves, never writes, because she'd rather judge you than work on it herself
 policies/                # your policies (NOT git-tracked — see .gitignore) — The Karen who enforces your rules, not your commit history
 target/release/karen     # binary — The Karen you run

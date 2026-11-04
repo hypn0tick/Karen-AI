@@ -12,6 +12,21 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Every fact name a gate may read under `facts.`: the list `docs/session-facts.md`
+/// answers to. `env` stands for `facts.env.<NAME>`, one allowlisted variable each.
+pub const FACT_NAMES: &[&str] = &[
+    "runtime",
+    "mcp_servers",
+    "tools",
+    "git_uncommitted",
+    "session_id",
+    "context_tokens",
+    "context_window",
+    "context_ratio",
+    "provider_error",
+    "env",
+];
+
 /// Facts stable for a session, cached in the state store under `facts.<name>`.
 const SESSION_STABLE: &[&str] = &["runtime", "mcp_servers", "tools"];
 /// Most uncommitted paths reported, so a large dirty tree stays a small payload.
@@ -579,6 +594,32 @@ mod tests {
         facts.insert("context_tokens".into(), Value::from(tokens));
         facts.insert("context_window".into(), Value::from(window));
         facts
+    }
+
+    /// The facts the reference page's first column names, as `facts.<name>` with
+    /// any `.<NAME>` tail cut off.
+    fn documented_facts() -> Vec<String> {
+        include_str!("../../docs/session-facts.md")
+            .lines()
+            .skip_while(|line| *line != "## Where each fact comes from")
+            .skip(1)
+            .take_while(|line| !line.starts_with("## "))
+            .filter_map(|line| line.strip_prefix("| `facts."))
+            .filter_map(|row| row.split('`').next())
+            .filter_map(|name| name.split('.').next())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_reference_page_documents_exactly_the_facts_she_collects() {
+        // A page that names a fact she does not collect promises a gate that
+        // can never fire; a fact missing from it is one nobody can find.
+        let mut documented = documented_facts();
+        documented.sort();
+        let mut known: Vec<String> = FACT_NAMES.iter().map(|name| (*name).to_string()).collect();
+        known.sort();
+        assert_eq!(documented, known);
     }
 
     #[test]
