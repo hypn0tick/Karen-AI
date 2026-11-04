@@ -3,26 +3,14 @@
 // which messages she will take, and what she writes in the ledger when nobody
 // is there to carry one.
 
+use crate::e2e::common::commands::{command_gate, runtime_lines, runtime_log, user_layer};
 use crate::e2e::common::{DEFAULT_CONFIG, GateFixture, TestEnv, assert_exit_code, assert_json_ok};
 use serde_json::{Value, json};
 use serial_test::serial;
 
-/// A `runtime_command` gate that matches every tool call. `enabled` is the
-/// gate's own switch.
+/// A `runtime_command` gate that matches every tool call.
 fn gate(id: &str, command: &str, arguments: Option<&str>, enabled: bool) -> String {
-    let mut action = json!({ "type": "runtime_command", "command": command });
-    if let Some(arguments) = arguments {
-        action["arguments"] = json!(arguments);
-    }
-    json!({
-        "id": id,
-        "description": "The test gate for runtime_command.",
-        "event": "PreToolUse",
-        "enabled": enabled,
-        "match": { "all": [ { "type": "always" } ] },
-        "action": action,
-    })
-    .to_string()
+    command_gate(id, "PreToolUse", command, arguments, enabled)
 }
 
 /// A fixture for the project layer. Test values leak: a fixture lives as long
@@ -31,21 +19,6 @@ fn project_gate(file: &'static str, content: String) -> GateFixture {
     GateFixture {
         file,
         content: Box::leak(content.into_boxed_str()),
-    }
-}
-
-/// A user layer at `<home>/.karen/policies`: the only layer that may type.
-fn user_layer(env: &TestEnv, config: &str, gates: &[(&str, String)]) {
-    let root = env.home_dir.join(".karen").join("policies");
-    std::fs::create_dir_all(root.join("gates")).expect("create user gates dir");
-    std::fs::create_dir_all(root.join("rules")).expect("create user rules dir");
-    std::fs::write(
-        root.join("config.toml"),
-        format!("# User layer.\n\n[state]\nbackend = \"memory\"\n\n{config}\n"),
-    )
-    .expect("write user config");
-    for (file, content) in gates {
-        std::fs::write(root.join("gates").join(file), content).expect("write user gate");
     }
 }
 
@@ -60,20 +33,6 @@ fn pretool(session: &str, command: &str, facts: &Value) -> String {
         "facts": facts,
     })
     .to_string()
-}
-
-/// The runtime log a test home keeps, as parsed JSON lines.
-fn runtime_lines(env: &TestEnv) -> Vec<Value> {
-    let log = env
-        .home_dir
-        .join(".karen")
-        .join("logs")
-        .join("karen-runtime.jsonl");
-    std::fs::read_to_string(&log)
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
 }
 
 /// An env with an empty project layer and a user layer holding `gates`.
@@ -129,9 +88,9 @@ fn karen_logs_an_allowed_command_that_no_layer_carries() {
     // The one thing she says aloud is the merge notice: a gate that types, and
     // a runtime nothing reaches, is a configuration the owner should hear of.
     assert!(
-        out["systemMessage"].as_str().is_some_and(
-            |m| m.contains("has no layer that reaches claude, codex, opencode sessions")
-        ),
+        out["systemMessage"]
+            .as_str()
+            .is_some_and(|m| m.contains("has no layer that reaches claude, codex sessions")),
         "the merge notice names the unreached runtimes: {out}"
     );
     let line = only_line(&env);
@@ -174,13 +133,7 @@ fn karen_logs_the_arguments_as_the_gate_wrote_them_never_rendered() {
     let line = only_line(&env);
     assert_eq!(line["arguments"], "after: {facts.provider_error.message}");
     assert_eq!(line["status"], "undelivered:no-layer");
-    let raw = std::fs::read_to_string(
-        env.home_dir
-            .join(".karen")
-            .join("logs")
-            .join("karen-runtime.jsonl"),
-    )
-    .expect("the runtime log");
+    let raw = runtime_log(&env);
     assert!(
         !raw.contains("SECRET-IN-A-FACT"),
         "a rendered fact must never reach the ledger: {raw}"
@@ -468,14 +421,19 @@ fn karen_validate_reports_each_configured_runtime_and_the_layers_that_reach_it()
         ["claude", "codex", "opencode"],
         "the default set is every runtime"
     );
-    assert!(
-        layers.iter().all(|l| l["layers"] == json!([])),
-        "no layer is wired yet: {layers:?}"
-    );
+    let layers_of = |runtime: &str| {
+        layers
+            .iter()
+            .find(|l| l["runtime"] == runtime)
+            .map(|l| l["layers"].clone())
+    };
+    assert_eq!(layers_of("opencode"), Some(json!(["opencode-native"])));
+    assert_eq!(layers_of("claude"), Some(json!([])));
+    assert_eq!(layers_of("codex"), Some(json!([])));
     let issues = validate_issues(&env);
     assert!(
         issues.iter().any(|m| m.contains(
-            "has no layer that reaches claude, codex, opencode sessions, so `compact-it` will log `undelivered:no-layer` there"
+            "has no layer that reaches claude, codex sessions, so `compact-it` will log `undelivered:no-layer` there"
         )),
         "validate must name every runtime nothing reaches, once: {issues:?}"
     );
@@ -489,7 +447,9 @@ fn karen_validate_reports_each_configured_runtime_and_the_layers_that_reach_it()
     );
     let (_code, text, _stderr) = env.run_karen(&["validate"]);
     assert!(
-        text.contains("runtime_command layers:") && text.contains("claude: none"),
+        text.contains("runtime_command layers:")
+            && text.contains("claude: none")
+            && text.contains("opencode: opencode-native"),
         "the text report carries the table: {text}"
     );
 }
@@ -637,4 +597,136 @@ fn karen_schema_lists_runtime_command_among_the_actions() {
             .any(|a| a == "runtime_command"),
         "{data}"
     );
+}
+
+/// A tool-call payload from the `OpenCode` bridge: its runtime named, and the
+/// layer it can run offered.
+fn bridge_pretool(session: &str, layers: &Value) -> String {
+    json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": session,
+        "tool_name": "Bash",
+        "tool_input": { "command": "echo hi" },
+        "facts": { "runtime": "opencode" },
+        "runtime_layers": layers,
+    })
+    .to_string()
+}
+
+#[test]
+#[serial]
+fn karen_hands_a_command_to_the_layer_the_caller_offers() {
+    // The bridge lives in the runtime's own process, so she cannot type for it:
+    // she hands the rendered line back in her answer and says so in the ledger.
+    let env = user_env(
+        "[actions]
+runtime_commands = [\"/compact\"]",
+        &[(
+            "compact.json",
+            gate(
+                "compact-it",
+                "/compact",
+                Some("for {facts.session_id}"),
+                true,
+            ),
+        )],
+    );
+    let (code, stdout, _stderr) = env.run_hook(
+        &bridge_pretool("rc-20", &json!(["opencode-native"])),
+        &["--runtime", "opencode"],
+    );
+    assert_exit_code(code, 0);
+    let out: Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
+    assert_eq!(
+        out["karenRuntimeCommands"],
+        json!([{ "gate": "compact-it", "command": "/compact", "arguments": "for rc-20" }]),
+        "the answer carries the line for the bridge to type: {out}"
+    );
+    let line = only_line(&env);
+    assert_eq!(line["status"], "handed-off");
+    assert_eq!(line["layer"], "opencode-native");
+    assert_eq!(
+        line["arguments"], "for {facts.session_id}",
+        "the ledger keeps the template, not the rendering"
+    );
+    assert!(
+        !runtime_log(&env).contains("for rc-20"),
+        "a rendered argument never reaches the ledger"
+    );
+}
+
+#[test]
+#[serial]
+fn karen_hands_nothing_to_a_bridge_that_does_not_offer_the_layer() {
+    // A bridge from before the layer existed offers none, and a hand-off it
+    // would drop on the floor is `undelivered:no-layer`, not a promise.
+    let env = user_env(
+        ALLOW_COMPACT,
+        &[("compact.json", gate("compact-it", "/compact", None, true))],
+    );
+    let (code, stdout, _stderr) = env.run_hook(
+        &bridge_pretool("rc-21", &json!([])),
+        &["--runtime", "opencode"],
+    );
+    assert_exit_code(code, 0);
+    let out: Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
+    assert!(out.get("karenRuntimeCommands").is_none(), "{out}");
+    assert_eq!(only_line(&env)["status"], "undelivered:no-layer");
+}
+
+#[test]
+#[serial]
+fn karen_does_not_let_a_caller_offer_another_runtimes_layer() {
+    // A layer belongs to a runtime: a Claude Code payload that names the
+    // OpenCode layer does not get it handed back.
+    let env = user_env(
+        ALLOW_COMPACT,
+        &[("compact.json", gate("compact-it", "/compact", None, true))],
+    );
+    let payload = json!({
+        "hook_event_name": "PreToolUse",
+        "session_id": "rc-22",
+        "tool_name": "Bash",
+        "tool_input": { "command": "echo hi" },
+        "runtime_layers": ["opencode-native"],
+    })
+    .to_string();
+    let (code, stdout, _stderr) = env.run_hook(&payload, &["--runtime", "claude"]);
+    assert_exit_code(code, 0);
+    let out: Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
+    assert!(out.get("karenRuntimeCommands").is_none(), "{out}");
+    assert_eq!(only_line(&env)["status"], "undelivered:no-layer");
+}
+
+#[test]
+#[serial]
+fn karen_evaluate_never_prints_the_line_a_layer_would_type() {
+    // The rendered arguments are data about the session. A rehearsal reports
+    // the status the live call would reach and keeps the line to itself.
+    let env = user_env(
+        "[actions]
+runtime_commands = [\"/compact\"]",
+        &[(
+            "compact.json",
+            gate(
+                "compact-it",
+                "/compact",
+                Some("secret {facts.session_id}"),
+                true,
+            ),
+        )],
+    );
+    let (code, stdout, _stderr) = env.run_evaluate_stdin(
+        &bridge_pretool("rc-23", &json!(["opencode-native"])),
+        &["--json", "--runtime", "opencode"],
+    );
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    assert_eq!(data["runtime_commands"][0]["status"], "handed-off");
+    assert_eq!(data["runtime_commands"][0]["layer"], "opencode-native");
+    assert!(
+        !stdout.contains("secret rc-23") && !stdout.contains("karenRuntimeCommands"),
+        "a rehearsal hands nothing over and prints no rendering: {stdout}"
+    );
+    assert!(runtime_lines(&env).is_empty(), "and files nothing");
 }

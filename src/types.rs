@@ -216,6 +216,20 @@ pub struct CommandOutcome {
     pub command: String,
     pub layer: Option<String>,
     pub status: String,
+    /// The line a layer is to type, set only while an attempt is handed to
+    /// one. It is rendered from the session's facts, so it is never
+    /// serialized: not into a rehearsal's output, not into the runtime log,
+    /// only into the one hand-off that carries it to the session.
+    #[serde(skip)]
+    pub typed: Option<TypedCommand>,
+}
+
+/// The command and the rendered arguments a layer types into a session, as the
+/// two halves the runtime wants them in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedCommand {
+    pub command: String,
+    pub arguments: String,
 }
 
 impl fmt::Display for Action {

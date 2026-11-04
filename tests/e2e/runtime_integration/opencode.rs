@@ -1304,7 +1304,7 @@ console.log(JSON.stringify({ held, after: prompts.slice(1) }));
 }
 
 /// The bridge installed into a project of its own, as `(project dir, plugin url)`.
-fn install_bridge(env: &TestEnv) -> (std::path::PathBuf, String) {
+pub(super) fn install_bridge(env: &TestEnv) -> (std::path::PathBuf, String) {
     let project_dir = env.temp_dir.path().join("opencode-proj");
     fs::create_dir_all(&project_dir).unwrap();
     let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);

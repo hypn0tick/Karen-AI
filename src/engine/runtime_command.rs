@@ -15,6 +15,9 @@
 //!   control character or run past [`MAX_LINE`]. A newline typed into a prompt
 //!   is a second prompt, and an escape sequence is a keystroke.
 //! - `undelivered:no-layer`: allowed, and nothing reaches this session.
+//! - `handed-off`: allowed, and a layer took it (named in `layer`). The layer
+//!   delivers after her process has exited, so this is the last thing she can
+//!   know; the layer writes what became of it to the same log.
 //!
 //! A delivery is attempted on any runtime that has a layer. The user layer's
 //! `[actions] runtimes` only scopes what `karen validate` reports: a list
@@ -30,7 +33,7 @@
 use crate::engine::{dispatcher, facts, jsonl};
 use crate::policy::gate::{Gate, Layer};
 use crate::policy::loader::ActionsConfig;
-use crate::types::{CommandOutcome, EngineRequest};
+use crate::types::{CommandOutcome, EngineRequest, TypedCommand};
 use serde_json::json;
 
 /// The runtime log, under `<Karen home>/logs`.
@@ -46,6 +49,15 @@ pub mod status {
     pub const NOT_ALLOWLISTED: &str = "refused:not-allowlisted";
     pub const UNSAFE_TEXT: &str = "undelivered:unsafe-text";
     pub const NO_LAYER: &str = "undelivered:no-layer";
+    pub const HANDED_OFF: &str = "handed-off";
+}
+
+/// The layers a command can ride, by the name a log line carries.
+pub mod layer {
+    /// `OpenCode`'s own server API, called from the bridge plugin: a custom
+    /// command through `session.command`, `/compact` through
+    /// `session.summarize`, a TUI built-in through `tui.executeCommand`.
+    pub const OPENCODE_NATIVE: &str = "opencode-native";
 }
 
 /// Whether `text` can be typed as part of one prompt line: no control
@@ -69,8 +81,23 @@ pub fn is_command(text: &str) -> bool {
 /// The layers that can carry a command into a `runtime`'s sessions, best
 /// first. A session reaches one of them or none, and none is logged.
 #[must_use]
-pub fn layers_for(_runtime: &str) -> &'static [&'static str] {
-    &[]
+pub fn layers_for(runtime: &str) -> &'static [&'static str] {
+    match runtime {
+        "opencode" => &[layer::OPENCODE_NATIVE],
+        _ => &[],
+    }
+}
+
+/// The layers the payload says its caller can run, from the top-level
+/// `runtime_layers` list the `OpenCode` bridge sends. A layer that lives in the
+/// runtime's own process is the caller's to offer: a bridge from before the
+/// layer existed offers nothing, and the command is `undelivered:no-layer`
+/// instead of a hand-off nobody picks up.
+fn offered(raw: &serde_json::Value) -> Vec<&str> {
+    raw.get("runtime_layers")
+        .and_then(serde_json::Value::as_array)
+        .map(|names| names.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default()
 }
 
 /// Decide what becomes of one `runtime_command` that fired, record it, and
@@ -85,14 +112,14 @@ pub fn attempt(
     actions: &ActionsConfig,
     rehearsal: bool,
 ) -> CommandOutcome {
-    let runtime = facts::runtime(&req.raw);
-    let status = decide(gate, command, arguments, req, actions);
+    let decision = decide(gate, command, arguments, req, actions);
     let outcome = CommandOutcome {
         gate: gate.id.clone(),
-        runtime,
+        runtime: facts::runtime(&req.raw),
         command: command.to_string(),
-        layer: None,
-        status: status.to_string(),
+        layer: decision.layer.map(str::to_string),
+        status: decision.status.to_string(),
+        typed: decision.typed,
     };
     if !rehearsal {
         jsonl::append(
@@ -112,7 +139,26 @@ pub fn attempt(
     outcome
 }
 
-/// The status, in the order her rules apply: who is asking, which command,
+/// What `decide` settled: the status, the layer that took the command when one
+/// did, and the line it is to type.
+struct Decision {
+    status: &'static str,
+    layer: Option<&'static str>,
+    typed: Option<TypedCommand>,
+}
+
+impl Decision {
+    /// Ended here, with nothing handed to anyone.
+    const fn stop(status: &'static str) -> Self {
+        Self {
+            status,
+            layer: None,
+            typed: None,
+        }
+    }
+}
+
+/// The decision, in the order her rules apply: who is asking, which command,
 /// what text, and only then whether anything can carry it.
 fn decide(
     gate: &Gate,
@@ -120,21 +166,36 @@ fn decide(
     arguments: Option<&str>,
     req: &EngineRequest,
     actions: &ActionsConfig,
-) -> &'static str {
+) -> Decision {
     if gate.layer != Layer::User {
-        return status::NOT_USER_LAYER;
+        return Decision::stop(status::NOT_USER_LAYER);
     }
     if !actions.runtime_commands.iter().any(|c| c == command) {
-        return status::NOT_ALLOWLISTED;
+        return Decision::stop(status::NOT_ALLOWLISTED);
     }
     let rendered = arguments
         .map(|template| dispatcher::expand_facts(&template.replace("{gate}", &gate.id), req));
     let line_chars = command.chars().count() + rendered.as_deref().map_or(0, |a| a.chars().count());
     if !is_command(command) || !rendered.as_deref().is_none_or(is_typeable) || line_chars > MAX_LINE
     {
-        return status::UNSAFE_TEXT;
+        return Decision::stop(status::UNSAFE_TEXT);
     }
-    status::NO_LAYER
+    let offered = offered(&req.raw);
+    let carrier = layers_for(&facts::runtime(&req.raw))
+        .iter()
+        .copied()
+        .find(|layer| offered.contains(layer));
+    match carrier {
+        Some(layer) => Decision {
+            status: status::HANDED_OFF,
+            layer: Some(layer),
+            typed: Some(TypedCommand {
+                command: command.to_string(),
+                arguments: rendered.unwrap_or_default(),
+            }),
+        },
+        None => Decision::stop(status::NO_LAYER),
+    }
 }
 
 #[cfg(test)]
@@ -168,9 +229,25 @@ mod tests {
     }
 
     #[test]
-    fn no_runtime_has_a_layer_until_one_is_wired() {
-        for runtime in crate::policy::loader::RUNTIMES {
-            assert!(layers_for(runtime).is_empty(), "{runtime}");
+    fn opencode_has_its_native_layer_and_the_terminal_runtimes_have_none_yet() {
+        assert_eq!(layers_for("opencode"), [layer::OPENCODE_NATIVE]);
+        for runtime in ["claude", "codex", "unknown"] {
+            assert_eq!(layers_for(runtime).len(), 0, "{runtime}");
         }
+    }
+
+    #[test]
+    fn a_layer_is_offered_by_the_payload_or_not_at_all() {
+        assert_eq!(
+            offered(&json!({ "runtime_layers": ["opencode-native", 7] })),
+            ["opencode-native"],
+            "only strings count"
+        );
+        let none = Vec::<&str>::new();
+        assert_eq!(offered(&json!({})), none);
+        assert_eq!(
+            offered(&json!({ "runtime_layers": "opencode-native" })),
+            none
+        );
     }
 }

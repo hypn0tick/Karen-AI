@@ -7,3 +7,5 @@ mod claude;
 mod codex;
 #[cfg(test)]
 mod opencode;
+#[cfg(test)]
+mod opencode_commands;

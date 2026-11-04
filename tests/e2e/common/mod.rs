@@ -2,6 +2,7 @@
 // The Karen who builds test infrastructure because she's tired of copy-pasting temp dir setup in every test file.
 
 pub mod assertions;
+pub mod commands;
 pub mod fixtures;
 pub mod runtime;
 

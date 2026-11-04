@@ -78,6 +78,35 @@ impl RuntimeAdapter for ClaudeClassic {
     }
 
     fn denormalize(&self, request: &EngineRequest, response: EngineResponse) -> Value {
+        // A `runtime_command` handed to a layer that lives in the runtime's own
+        // process (the OpenCode bridge) leaves her as a field of the answer: the
+        // bridge types it after she has exited. Only a caller that offered the
+        // layer is ever handed one, so no other runtime sees the field.
+        let handed: Vec<Value> = response
+            .runtime_commands
+            .iter()
+            .filter_map(|outcome| {
+                let typed = outcome.typed.as_ref()?;
+                Some(json!({
+                    "gate": outcome.gate,
+                    "command": typed.command,
+                    "arguments": typed.arguments,
+                }))
+            })
+            .collect();
+        let mut out = Self::verdict(request, &response);
+        if !handed.is_empty() {
+            if let Some(object) = out.as_object_mut() {
+                object.insert("karenRuntimeCommands".into(), Value::Array(handed));
+            }
+        }
+        out
+    }
+}
+
+impl ClaudeClassic {
+    /// The runtime's answer to the verdict, before anything is handed off.
+    fn verdict(request: &EngineRequest, response: &EngineResponse) -> Value {
         let context = response
             .injections
             .iter()

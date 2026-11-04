@@ -1535,6 +1535,10 @@ const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API 
 // provider's own failures (`session.error`) ride the Stop review the same way. A prompt is
 // reviewed as a UserPromptSubmit through the `chat.message` hook, and a compaction
 // (`session.compacted`) is her PostCompact, so `reset_on_compact` works here too.
+// A gate's `runtime_command` comes back from Karen as `karenRuntimeCommands`; this bridge types it
+// through OpenCode's own server API once the session is idle (`/compact` as `session.summarize`, a
+// custom command as `session.command`, a TUI built-in as `tui.executeCommand`) and files what
+// became of it in `karen-runtime.jsonl`, the ledger Karen writes herself.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -1557,6 +1561,21 @@ const fail = (stage, sid, detail) => {
 };
 const TOOL_NAMES = { list: "LS", webfetch: "WebFetch", todowrite: "TodoWrite", todoread: "TodoRead", multiedit: "MultiEdit" };
 const toolName = (tool) => TOOL_NAMES[tool] ?? (tool ? tool[0].toUpperCase() + tool.slice(1) : tool);
+
+// The layers this bridge runs itself. Karen hands a `runtime_command` back only for a layer the
+// payload names, so a bridge from before the layer existed never receives one it would drop.
+const LAYERS = ["opencode-native"];
+const RUNTIME_LOG = join(KAREN_HOME, "logs", "karen-runtime.jsonl");
+// What became of a command after Karen handed it over, in the ledger she writes herself. Never
+// the arguments: they are rendered from the session's facts, and the ledger keeps none of that.
+const filed = (sid, cmd, route, status) => {
+  try {
+    mkdirSync(dirname(RUNTIME_LOG), { recursive: true });
+    appendFileSync(RUNTIME_LOG, JSON.stringify({ time: Date.now(), session: sid, gate: cmd.gate, runtime: "opencode", command: cmd.command, layer: "opencode-native", route, status }) + "\n");
+  } catch {}
+};
+// Set by KarenAI, which owns the client: takes the commands Karen handed back for a session.
+let handOff = () => {};
 
 // An async spawn, never spawnSync: under OpenCode's embedded Bun on Windows, spawnSync of the
 // same binary timed out (ETIMEDOUT) on every call even with no stdin, while an async spawn
@@ -1587,7 +1606,8 @@ function karen(payload, part) {
     let child;
     try {
       mkdirSync(RUN, { recursive: true, mode: 0o700 });
-      writeFileSync(file, JSON.stringify({ ...payload, facts }), { mode: 0o600, flag: "wx" });
+      // A rules fetch (`part`) runs under a made-up session id: nothing typed there could reach a session.
+      writeFileSync(file, JSON.stringify({ ...payload, facts, ...(part ? {} : { runtime_layers: LAYERS }) }), { mode: 0o600, flag: "wx" });
       child = spawn(KAREN, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     } catch (e) {
       fail(`spawn ${KAREN} on ${event}`, sid, e);
@@ -1604,7 +1624,13 @@ function karen(payload, part) {
     child.on("close", (status) => {
       clearTimeout(timer);
       if (status !== 0) { fail(`exit ${status} on ${event}`, sid, stderr || "(no stderr)"); return done({}); }
-      try { done(JSON.parse(stdout || "{}")); } catch (e) { fail(`unreadable output on ${event}`, sid, e); done({}); }
+      let value;
+      try { value = JSON.parse(stdout || "{}"); } catch (e) { fail(`unreadable output on ${event}`, sid, e); return done({}); }
+      // The commands leave the answer here: the hook sites below read verdicts and never see them.
+      const commands = Array.isArray(value?.karenRuntimeCommands) ? value.karenRuntimeCommands : [];
+      if (value && typeof value === "object") delete value.karenRuntimeCommands;
+      done(value);
+      if (commands.length) handOff(sid, commands);
     });
   });
 }
@@ -1723,6 +1749,73 @@ export const KarenAI = async ({ directory, client }) => {
       .prompt({ path: { id: sid }, body: { ...(model ? { model } : {}), parts: [{ type: "text", text }] } })
       .catch((e) => fail(`session.prompt (${label})`, sid, e));
   };
+  // A command is typed when the session is idle, never into the middle of a turn: one handed back
+  // while a turn runs waits for the session's next idle, and is filed as undelivered if none comes.
+  const busy = new Set(); // sessions mid-turn: a tool ran, a prompt landed, or the server said busy
+  const pending = new Map(); // session -> commands waiting for idle, oldest first
+  const WAIT_MS = Number(process.env.KAREN_COMMAND_WAIT_MS) || 120000; // KAREN_COMMAND_WAIT_MS shortens it, for tests
+  // The built-ins that live in the TUI, as the SDK names them for `tui.executeCommand`.
+  const TUI_COMMANDS = { new: "session.new", share: "session.share" };
+  // A request that comes back with an error answers later than the call returns, so the answer is read where it lands.
+  const outcome = (sid, cmd, route, call) => {
+    const failed = (detail) => { fail(`runtime_command ${cmd.command} via ${route}`, sid, detail); filed(sid, cmd, route, "undelivered:error"); };
+    Promise.resolve(call).then((r) => { if (r?.error) failed(`HTTP ${r?.response?.status ?? "error"}`); }, failed);
+  };
+  const send = async (sid, cmd) => {
+    const name = String(cmd.command).replace(/^\//, "");
+    try {
+      if (name === "compact" || name === "summarize") {
+        // The TUI's own /compact calls this, so it needs no TUI. The call takes no instructions.
+        const model = (await wakeModel(sid)) ?? models.get(sid);
+        if (!model) return filed(sid, cmd, "session.summarize", "undelivered:no-model");
+        outcome(sid, cmd, "session.summarize", client.session.summarize({ path: { id: sid }, body: { providerID: model.providerID, modelID: model.modelID } }));
+        return filed(sid, cmd, "session.summarize", "sent");
+      }
+      const known = (await client.command?.list?.())?.data;
+      if (Array.isArray(known) && known.some((c) => c?.name === name)) {
+        outcome(sid, cmd, "session.command", client.session.command({ path: { id: sid }, body: { command: name, arguments: cmd.arguments ?? "" } }));
+        return filed(sid, cmd, "session.command", "sent");
+      }
+      if (TUI_COMMANDS[name] && client.tui?.executeCommand) {
+        // The server answers true whether or not a TUI is listening, so this is never "sent".
+        outcome(sid, cmd, "tui.executeCommand", client.tui.executeCommand({ body: { command: TUI_COMMANDS[name] } }));
+        return filed(sid, cmd, "tui.executeCommand", "sent-unconfirmed");
+      }
+      filed(sid, cmd, "none", "undelivered:unknown-command");
+    } catch (e) {
+      fail(`runtime_command ${cmd.command}`, sid, e);
+      filed(sid, cmd, "none", "undelivered:error");
+    }
+  };
+  // One command per idle: a command starts a turn of its own (a compaction, a custom prompt), and
+  // the next waits for that turn's idle.
+  const flush = (sid) => {
+    const queue = pending.get(sid);
+    const next = queue?.shift();
+    if (!next) return;
+    clearTimeout(next.timer);
+    if (!queue.length) pending.delete(sid);
+    busy.add(sid);
+    send(sid, next.cmd);
+  };
+  handOff = (sid, commands) => {
+    if (!sid || !client) return;
+    for (const cmd of commands) {
+      const queue = pending.get(sid) ?? [];
+      const item = { cmd };
+      item.timer = setTimeout(() => {
+        const left = pending.get(sid);
+        if (!left?.includes(item)) return;
+        left.splice(left.indexOf(item), 1);
+        if (!left.length) pending.delete(sid);
+        filed(sid, cmd, "none", "undelivered:timeout");
+      }, WAIT_MS);
+      item.timer.unref?.();
+      queue.push(item);
+      pending.set(sid, queue);
+    }
+    if (!busy.has(sid)) flush(sid);
+  };
   return {
     event: async ({ event }) => {
       // `message.updated` is the meter reader: each assistant message reports its tokens as
@@ -1787,11 +1880,23 @@ export const KarenAI = async ({ directory, client }) => {
           models.delete(sid);
           windows.delete(sid);
           errors.delete(sid);
+          busy.delete(sid);
+          for (const item of pending.get(sid) ?? []) {
+            clearTimeout(item.timer);
+            filed(sid, item.cmd, "none", "undelivered:session-deleted");
+          }
+          pending.delete(sid);
         }
+        return;
+      }
+      if (event?.type === "session.status" && event.properties?.status?.type && event.properties.status.type !== "idle" && event.properties.sessionID) {
+        busy.add(event.properties.sessionID);
         return;
       }
       const idle = event?.type === "session.idle" || (event?.type === "session.status" && event.properties?.status?.type === "idle");
       const sid = event?.properties?.sessionID;
+      // The turn is over, so a command that waited for it goes now, ahead of the review below.
+      if (idle && sid) { busy.delete(sid); flush(sid); }
       if (!idle || !sid || !client?.session) return;
       let last = null;
       try { last = lastAssistant((await client.session.messages({ path: { id: sid } }))?.data); } catch (e) { fail("session.messages on idle", sid, e); return; }
@@ -1859,6 +1964,7 @@ export const KarenAI = async ({ directory, client }) => {
     // as one synthetic part the agent reads, sorted after the part it follows.
     "chat.message": async (input, output) => {
       const sid = input?.sessionID ?? output?.message?.sessionID;
+      if (sid) busy.add(sid);
       const parts = output?.parts ?? [];
       const prompt = parts.filter((p) => p?.type === "text" && !p.synthetic && !p.ignored).map((p) => p.text).join("\n");
       const out = await karen({ hook_event_name: "UserPromptSubmit", session_id: sid, cwd: directory, prompt, facts: await contextFacts(sid) });
@@ -1876,6 +1982,7 @@ export const KarenAI = async ({ directory, client }) => {
       });
     },
     "tool.execute.before": async (input, output) => {
+      if (input.sessionID) busy.add(input.sessionID);
       const out = await karen({ hook_event_name: "PreToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: output.args, facts: await contextFacts(input.sessionID) });
       if (out.modifiedInput && typeof out.modifiedInput === "object") {
         Object.assign(output.args, out.modifiedInput);
@@ -1889,6 +1996,7 @@ export const KarenAI = async ({ directory, client }) => {
       if (message) notices.set(input.callID, message);
     },
     "tool.execute.after": async (input, output) => {
+      if (input.sessionID) busy.add(input.sessionID);
       const out = await karen({ hook_event_name: "PostToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: input.args, tool_response: output.output, facts: await contextFacts(input.sessionID) });
       const notes = [notices.get(input.callID), out.decision === "block" ? out.reason : null, notice(input.sessionID, out.systemMessage)].filter(Boolean);
       notices.delete(input.callID);

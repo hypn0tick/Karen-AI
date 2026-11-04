@@ -354,6 +354,8 @@ Arguments render `{gate}` and `{facts.<path>}` and nothing else: the agent's own
 
 Every attempt ends as exactly one status, rides the verdict (`karen evaluate --json` shows `runtime_commands`) and lands as one JSON line — `time`, `session`, `gate`, `runtime`, `command`, `arguments`, `layer`, `status` — in `<Karen home>/logs/karen-runtime.jsonl`, rotated like the notify log. The log keeps the arguments as the gate wrote them, placeholders unexpanded: what a fact rendered into them is data about the session, and the ledger does not keep it. A rehearsal (`karen evaluate`) files nothing. A command no layer can carry is logged `undelivered:no-layer` and `karen validate` says which configured runtimes have no layer. Never silent.
 
+OpenCode has a layer today: its bridge types through the server's own API once the session is idle — `/compact` as `session.summarize` (the TUI's own call, so no TUI is needed), a custom command as `session.command`, `/new` and `/share` through `tui.executeCommand` — and files what became of each in the same log. Claude Code and Codex have none yet.
+
 Which layer each runtime gets, and the whole status list: [`docs/runtime-control.md`](docs/runtime-control.md).
 
 ### State (deny_once_then_warn)
@@ -621,7 +623,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-311 tests passing (44 unit, 20 integration, 247 e2e — zero ignored). The Karen
+326 tests passing (45 unit, 20 integration, 261 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
