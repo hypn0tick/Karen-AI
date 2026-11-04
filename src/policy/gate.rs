@@ -174,6 +174,32 @@ pub enum ActionDef {
         first_reason: String,
         second_reason: String,
     },
+    /// Say it and stay out of the way: the reason renders into the session as
+    /// a notice and lands as one line in the notify log, and the call
+    /// proceeds. The Karen who files the complaint and lets you through,
+    /// because the complaint was the point.
+    Notify {
+        reason: String,
+    },
+}
+
+impl ActionDef {
+    /// Every reason this action renders, whatever shape it delivers them in.
+    /// For validation that reads the text a gate will say aloud.
+    #[must_use]
+    pub fn reasons(&self) -> Vec<&str> {
+        match self {
+            Self::Allow => Vec::new(),
+            Self::Deny { reason }
+            | Self::Ask { reason }
+            | Self::Notify { reason }
+            | Self::Modify { reason, .. } => vec![reason],
+            Self::DenyOnceThenWarn {
+                first_reason,
+                second_reason,
+            } => vec![first_reason, second_reason],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

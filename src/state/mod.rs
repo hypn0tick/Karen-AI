@@ -13,6 +13,11 @@ pub trait StateStore: Send + Sync {
     fn get(&self, session: &str, key: &str) -> Option<Value>;
     fn set(&self, session: &str, key: &str, value: Value);
     fn remove(&self, session: &str, key: &str);
+    /// Whether this store refuses writes — a rehearsal, not a ledger. Side
+    /// effects that are not the store itself (the notify log) stay home too.
+    fn read_only(&self) -> bool {
+        false
+    }
     fn increment(&self, session: &str, key: &str) -> u64 {
         let next = self.get(session, key).and_then(|v| v.as_u64()).unwrap_or(0) + 1;
         self.set(session, key, Value::from(next));
@@ -46,6 +51,10 @@ impl StateStore for ReadOnlyStore {
     fn remove(&self, _session: &str, _key: &str) {
         // Removal refused too. She's just looking, and she'll leave the
         // shelf exactly as she found it.
+    }
+
+    fn read_only(&self) -> bool {
+        true
     }
 
     fn increment(&self, session: &str, key: &str) -> u64 {

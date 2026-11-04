@@ -202,6 +202,23 @@ impl Engine {
     fn evaluate(&self, gate: &Gate, req: &EngineRequest) -> Verdict {
         match &gate.action {
             ActionDef::Allow => Verdict::Allow(None),
+            ActionDef::Notify { reason } => {
+                let text = expand(reason, gate, req);
+                // A rehearsal does not file: evaluate reads real strike state
+                // so the preview is honest, and the notify log stays untouched
+                // by a dry run, like every other ledger.
+                if !self.state.read_only() {
+                    notify_log(&req.session_id, &gate.id, &text);
+                }
+                // Said and stepped aside: the notice teaches in-session, the
+                // log line teaches whoever tails it, and the call proceeds.
+                Verdict::Allow(Some(Injection {
+                    content: text,
+                    kind: InjectionKind::Notice,
+                    once_per_session: false,
+                    source: Some(gate.id.clone()),
+                }))
+            }
             ActionDef::Deny { reason } => {
                 Verdict::Deny(Action::deny(expand(reason, gate, req)), None)
             }
@@ -337,12 +354,93 @@ fn convert_head_to_select_object(req: &EngineRequest) -> Option<serde_json::Valu
     Some(serde_json::json!({"command": converted}))
 }
 
+/// Expand `{gate}`, `{tool}` and `{command}` as ever, plus `{facts.<path>}`:
+/// the rendered fact from the enriched request. Absent renders as
+/// `(unknown)` — an empty string would read like a value — an object or array
+/// as its compact JSON, a number as its JSON number. The one fact never
+/// rendered is `facts.env.*`: the allowlist granted a *match*, not a
+/// broadcast into reasons, notices and the notify log. The Karen who quotes
+/// the record, never the lockbox.
 fn expand(template: &str, gate: &Gate, req: &EngineRequest) -> String {
     // The Karen who remembers EXACTLY what she wants, and will certainly demand it.
-    template
+    let mut out = template
         .replace("{gate}", &gate.id)
         .replace("{tool}", req.tool_name.as_deref().unwrap_or("unknown"))
-        .replace("{command}", req.command().unwrap_or(""))
+        .replace("{command}", req.command().unwrap_or(""));
+    let mut from = 0;
+    while let Some(open) = out[from..].find("{facts.") {
+        let open = from + open;
+        let Some(close) = out[open..].find('}') else {
+            break;
+        };
+        let path = &out[open + "{facts.".len()..open + close];
+        let rendered = if path.starts_with("env.") {
+            // Not "(unknown)": the literal text, so the author sees their own
+            // placeholder refused in place. The search moves past it — the
+            // literal would otherwise be found and refused again, forever.
+            format!("{{facts.{path}}}")
+        } else {
+            crate::policy::gate::lookup(req, &format!("facts.{path}"))
+                .map_or_else(|| "(unknown)".into(), render_fact)
+        };
+        let end = open + close + 1;
+        out.replace_range(open..end, &rendered);
+        // Past the rendered span: a fact's own text is never re-expanded.
+        from = open + rendered.len();
+    }
+    out
+}
+
+/// A fact for an author's eyes: a string as itself, anything else as its
+/// compact JSON, so a number stays a number and an object stays readable.
+fn render_fact(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// One line of the notify log, under `<Karen home>/logs/karen-notify.jsonl`:
+/// `{"time": <epoch-ms>, "session": ..., "gate": ..., "text": ...}`. Past
+/// 10 MiB the log rotates — one generation, `karen-notify.jsonl.1` — so a
+/// long-running runtime does not grow a log without end. The Karen who files
+/// every complaint, and empties the drawer when it sticks.
+const NOTIFY_MAX: u64 = 10 * 1024 * 1024;
+fn notify_log(session: &str, gate: &str, text: &str) {
+    use std::io::Write;
+    let dir = crate::home::karen_home().join("logs");
+    let path = dir.join("karen-notify.jsonl");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() >= NOTIFY_MAX) {
+        // One generation: the old .1 leaves with the log that replaced it.
+        let _ = std::fs::rename(&path, dir.join("karen-notify.jsonl.1"));
+    }
+    let line = serde_json::json!({
+        "time": now_millis(),
+        "session": session,
+        "gate": gate,
+        "text": one_line(text),
+    });
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    let _ = writeln!(file, "{line}");
+}
+
+/// `text` on one line: a notify line is one line of the log, and a reason
+/// with a line break in it would become three.
+fn one_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// FNV-1a over a value's JSON text: a strike key that is stable across runs and

@@ -740,29 +740,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
     }
 
     gates.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
-    // A gate naming a variable the user layer never allowlisted matches
-    // nothing, forever: the fact stays absent, and a gate that can never fire
-    // is a silent no-op nobody knows is off duty. She names it at the border.
-    for gate in &gates {
-        let off: Vec<&str> = gate
-            .matcher
-            .fields()
-            .chain(gate.state.as_ref().and_then(|s| s.field.as_deref()))
-            .filter_map(|field| field.strip_prefix("facts.env."))
-            .filter(|name| !user_env.iter().any(|allowed| allowed == name))
-            .collect();
-        if !off.is_empty() {
-            issues.push(MergeIssue {
-                layer: gate.layer,
-                message: format!(
-                    "`{}` matches facts.env.{} not on the user layer's allowlist — the fact stays absent",
-                    gate.id,
-                    off.join(", ")
-                ),
-                kind: IssueKind::Warning,
-            });
-        }
-    }
+    warn_off_allowlist(&gates, &user_env, &mut issues);
     // Each layer's sections deserialized alone; a merge that still does not
     // keeps the defaults rather than dropping a single gate.
     let mut config = config_from(&table, &primary).unwrap_or_else(|error| {
@@ -801,6 +779,57 @@ fn env_names(table: &toml::Table) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Name at the border what would otherwise run silent: a gate matching a
+/// variable the user layer never allowlisted matches nothing forever, and a
+/// reason templating `{facts.env.*}` renders the literal placeholder — the
+/// allowlist granted a match, not a broadcast into reasons, notices and the
+/// notify log. A gate that can never fire is a silent no-op nobody knows is
+/// off duty; she names it at the door, not after the party.
+fn warn_off_allowlist(gates: &[Gate], user_env: &[String], issues: &mut Vec<MergeIssue>) {
+    for gate in gates {
+        let off: Vec<&str> = gate
+            .matcher
+            .fields()
+            .chain(gate.state.as_ref().and_then(|s| s.field.as_deref()))
+            .filter_map(|field| field.strip_prefix("facts.env."))
+            .filter(|name| !user_env.iter().any(|allowed| allowed == name))
+            .collect();
+        if !off.is_empty() {
+            issues.push(MergeIssue {
+                layer: gate.layer,
+                message: format!(
+                    "`{}` matches facts.env.{} not on the user layer's allowlist — the fact stays absent",
+                    gate.id,
+                    off.join(", ")
+                ),
+                kind: IssueKind::Warning,
+            });
+        }
+        let templated: Vec<String> = gate
+            .action
+            .reasons()
+            .into_iter()
+            .filter_map(|text| {
+                let at = text.find("{facts.env.")?;
+                let rest = &text[at..];
+                let end = rest.find('}')? + 1;
+                Some(rest[..end].to_string())
+            })
+            .collect();
+        if !templated.is_empty() {
+            issues.push(MergeIssue {
+                layer: gate.layer,
+                message: format!(
+                    "`{}` templates {} in a reason — env facts never render; the placeholder stays literal",
+                    gate.id,
+                    templated.join(", ")
+                ),
+                kind: IssueKind::Warning,
+            });
+        }
+    }
 }
 
 /// The gates merged so far, and where one layer's changes to them are recorded.
