@@ -77,3 +77,8 @@ unsafe_code = "warn"
 [lints.clippy]
 all = "warn"
 pedantic = "warn"
+
+# The console-attach probe is a Windows API experiment on top of the terminal host's dependencies.
+[[example]]
+name = "attach-probe"
+required-features = ["host"]

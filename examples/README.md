@@ -52,6 +52,7 @@ These read what the session's runtime actually has — the context window's occu
 ## Also in the box
 
 - `user-layer/` — a separate, ready-to-copy example for the one layer that may type into a session: the `[actions]` allowlist, the `[host]` knobs, a `runtime_command` gate (`/compact` when the window fills) and a gate on the terminal host's screen. Both gates ship disabled. It is not part of the pack above and is checked on its own: `runtime_command` is refused outside the user layer, so it cannot live among the project-layer gates.
+- `attach-probe.rs` — a Windows-only probe: attach to the console of a process Karen did not start, read its screen and type into it. The findings are in `docs/console-attach.md`.
 - `record-screens.rs` — an example program, not a gate: it hosts any agent CLI under `karen run` in a throwaway home and saves its screens, which is how the idle rules and `facts.screen.*` were checked (see `docs/runtime-control.md`).
 - `config.toml` — every knob she has, annotated. Copy to your `policies/` root and adjust.
 - `rule-00-briefing.md` — the delivered-prose side of the house: rules are injected into every session in tracked parts, but prose binds nobody. That's what the gates are for. The briefing is the briefing; the gates are the border.

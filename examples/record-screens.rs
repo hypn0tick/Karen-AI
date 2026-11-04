@@ -4,9 +4,12 @@
 //!
 //! ```text
 //! cargo run --example record-screens -- --runtime opencode --out DIR \
-//!     [--prompt "reply with the single word ok"] [--deliver] [--env KEY=VALUE]... \
+//!     [--prompt "reply with the single word ok"] [--deliver | --attach] [--env KEY=VALUE]... \
 //!     [--wait-secs 90] -- opencode --model opencode/big-pickle
 //! ```
+//!
+//! With `--attach` (Windows) the prompt is typed from outside, through the console API
+//! (`examples/attach-probe.rs`), and not through the host at all.
 //!
 //! With `--deliver` the prompt, and a second one, go through the host's queue (`deliver`) and not
 //! straight to the keyboard (`type`), so the host's idle rules decide when each is typed, and the
@@ -50,6 +53,8 @@ struct Options {
     prompt: String,
     /// Hand the prompt, and a second one, to the host's idle-gated queue instead of typing it now.
     deliver: bool,
+    /// Type the prompt through the Windows console API from outside, not through the host.
+    attach: bool,
     env: Vec<(String, String)>,
     wait: Duration,
     program: Vec<String>,
@@ -75,10 +80,12 @@ fn relay(args: &[String]) -> ExitCode {
         eprintln!("record-screens --relay FILE PROGRAM [ARGS]...");
         return ExitCode::from(2);
     };
-    let lines: Vec<String> = std::env::vars()
+    let mut lines: Vec<String> = std::env::vars()
         .filter(|(name, _)| name.starts_with("KAREN_HOST_"))
         .map(|(name, value)| format!("{name}={value}"))
         .collect();
+    // The relay shares the program's console, so it is a process whose console can be attached to.
+    lines.push(format!("RELAY_PID={}", std::process::id()));
     if std::fs::write(file, lines.join("\n")).is_err() {
         return ExitCode::from(2);
     }
@@ -98,6 +105,7 @@ fn options(args: &[String]) -> Result<Options, String> {
     let mut prompt = "reply with the single word ok".to_string();
     let mut env = Vec::new();
     let mut deliver = false;
+    let mut attach = false;
     let mut wait = Duration::from_secs(90);
     let mut at = 0;
     while at < args.len() {
@@ -106,8 +114,12 @@ fn options(args: &[String]) -> Result<Options, String> {
             at += 1;
             break;
         }
-        if flag == "--deliver" {
-            deliver = true;
+        if flag == "--deliver" || flag == "--attach" {
+            if flag == "--deliver" {
+                deliver = true;
+            } else {
+                attach = true;
+            }
             at += 1;
             continue;
         }
@@ -142,6 +154,7 @@ fn options(args: &[String]) -> Result<Options, String> {
         karen,
         prompt,
         deliver,
+        attach,
         env,
         wait,
         program,
@@ -171,6 +184,8 @@ fn sibling_karen() -> Result<PathBuf, String> {
 struct Session {
     child: Child,
     target: (String, String),
+    /// A process on the program's console, for `--attach`.
+    relay_pid: u32,
 }
 
 impl Session {
@@ -189,6 +204,32 @@ impl Session {
             Ok(())
         } else {
             Err(format!("the host refused the line: {:?}", answer.error))
+        }
+    }
+
+    /// Type `text` and Enter through the Windows console API, from outside the session
+    /// (`attach-probe`), and not through the host.
+    fn attach_line(&self, text: &str) -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|why| why.to_string())?;
+        let probe = exe.with_file_name(if cfg!(windows) {
+            "attach-probe.exe"
+        } else {
+            "attach-probe"
+        });
+        let output = karen::proc::command(&probe)
+            .arg(self.relay_pid.to_string())
+            .args(["--type", text, "--enter"])
+            .output()
+            .map_err(|why| format!("{}: {why}", probe.display()))?;
+        println!(
+            "attach-probe: {} {}",
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err("attach-probe failed".into())
         }
     }
 
@@ -286,9 +327,9 @@ fn start(options: &Options, home: &Path) -> Result<Session, String> {
         let _ = std::io::copy(&mut stdout, &mut std::io::sink());
     });
     let deadline = Instant::now() + Duration::from_secs(30);
-    let target = loop {
-        if let Some(target) = read_target(&relay_file) {
-            break target;
+    let (target, relay_pid) = loop {
+        if let Some(found) = read_target(&relay_file) {
+            break found;
         }
         if Instant::now() > deadline {
             let _ = child.kill();
@@ -296,17 +337,24 @@ fn start(options: &Options, home: &Path) -> Result<Session, String> {
         }
         std::thread::sleep(POLL);
     };
-    Ok(Session { child, target })
+    Ok(Session {
+        child,
+        target,
+        relay_pid,
+    })
 }
 
-fn read_target(file: &Path) -> Option<(String, String)> {
+fn read_target(file: &Path) -> Option<((String, String), u32)> {
     let text = std::fs::read_to_string(file).ok()?;
     let find = |name: &str| {
         text.lines()
             .find_map(|line| line.strip_prefix(&format!("{name}=")))
             .map(str::to_string)
     };
-    Some((find("KAREN_HOST_ENDPOINT")?, find("KAREN_HOST_TOKEN")?))
+    Some((
+        (find("KAREN_HOST_ENDPOINT")?, find("KAREN_HOST_TOKEN")?),
+        find("RELAY_PID")?.parse().ok()?,
+    ))
 }
 
 fn save(out: &Path, name: &str, text: &str) -> Result<(), String> {
@@ -336,7 +384,9 @@ fn record(options: &Options) -> Result<(), String> {
     session.keys(&[0x7f, 0x7f]);
     session.at_rest(Instant::now() + Duration::from_secs(15));
 
-    if options.deliver {
+    if options.attach {
+        session.attach_line(&options.prompt)?;
+    } else if options.deliver {
         let first = session.deliver_line(runtime, &options.prompt)?;
         let second = session.deliver_line(runtime, "reply with the single word two")?;
         println!("queued at places {first} and {second}");

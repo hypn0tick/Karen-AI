@@ -366,6 +366,8 @@ Which layer each runtime gets, the host's endpoint and threat model, and the who
 
 A ready-made user layer to copy from, with the allowlist, the `[host]` knobs and two gates (one that types `/compact`, one that reads the screen): [`examples/user-layer/`](examples/user-layer/). Both gates ship disabled.
 
+A session Karen did not start (a plain terminal, a Windows Terminal tab) can be read and typed into on Windows by attaching to its console; that was measured with a probe and is deliberately not a layer yet: [`docs/console-attach.md`](docs/console-attach.md).
+
 What has been tried against a live agent: the terminal layer against a live OpenCode (a line typed at once when idle; a second queued line typed only after the first turn ended). What has not: a live Claude Code or Codex, where the idle rules come from one recorded screen at rest and from the tool's own description. Screens can be recorded from any agent CLI with `cargo run --example record-screens` (see [`docs/runtime-control.md`](docs/runtime-control.md)), and the install check on a throwaway `karen run claude` session is what settles the rest.
 
 ### State (deny_once_then_warn)
@@ -633,7 +635,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-420 tests passing (102 unit, 20 integration, 298 e2e — zero ignored). The Karen
+427 tests passing (106 unit, 20 integration, 301 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

@@ -6,6 +6,7 @@
 //!   arrived (`line "…"`), and so is each argument it was started with (`arg "…"`) and each
 //!   `KAREN_HOST_*` variable it inherited (`env NAME=value`), which is how a test learns where the
 //!   control endpoint is.
+//! * the process id it runs as is logged too (`pid N`), for a test that attaches to its console.
 //! * `FAKE_RUNTIME_WORK_MS`: how long the runtime is busy with a line (default 300).
 //! * `/exit` ends it with code 0, `/crash` with code 3.
 //! * `/gauge` draws a status line with a context gauge, and `/limit` a usage limit banner, above
@@ -42,6 +43,7 @@ fn main() {
         .unwrap_or(300);
 
     note("started");
+    note(&format!("pid {}", std::process::id()));
     for argument in std::env::args().skip(1) {
         note(&format!("arg {argument:?}"));
     }

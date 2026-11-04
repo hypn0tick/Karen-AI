@@ -15,6 +15,8 @@ use karen::host::{Request, Response};
 
 use crate::e2e::common::{built_example, karen_binary_path};
 
+#[cfg(all(test, windows))]
+mod attach;
 #[cfg(test)]
 mod deliver;
 #[cfg(test)]
