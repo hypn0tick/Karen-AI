@@ -1,0 +1,30 @@
+// Example 17 — write the failure down for whoever is watching. Teaches: the
+// `ProviderError` event (the provider call itself failed, which is not a tool
+// call and not a Stop), and the `notify` action: the call proceeds, the agent
+// sees a notice, and one JSON line (`time`, `session`, `gate`, `text`) lands
+// in `<Karen home>/logs/karen-notify.jsonl` for an orchestrator that tails
+// the file. The Karen who files the complaint and lets everyone get on with
+// their day.
+{
+  "id": "log-provider-failures",
+  "name": "Log failed provider calls",
+  "description": "On a ProviderError, notify with the provider's message: a notice for the agent and one line in the notify log for whoever tails it.",
+  "event": "ProviderError",
+  "priority": 50,
+  "enabled": true,
+  "tags": ["facts", "provider-error", "notify"],
+
+  "match": {
+    // Naming the fact is what collects it for the reason below; a pattern
+    // that needs at least one character also keeps the gate quiet when the
+    // runtime reported a failure without a message.
+    "all": [
+      { "type": "field_regex", "field": "facts.provider_error.message", "pattern": "." }
+    ]
+  },
+
+  "action": {
+    "type": "notify",
+    "reason": "Provider call failed: {facts.provider_error.message}"
+  }
+}

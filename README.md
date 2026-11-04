@@ -378,7 +378,7 @@ Gates can be written in **JSON**, **JSONC**, or **JSON5** — all three extensio
 
 **Recommendation**: Pick one extension and stay consistent — this repo ships its gates as `.json`. Because every extension is parsed by the same engine, JSONC niceties (comments, trailing commas) work in `.json` files too. The Karen who prefers clarity over cleverness, and one drawer for all the scissors.
 
-**Note**: All three extensions are parsed identically — and every example in [`examples/`](examples/) ships as `.json` *with comments inside*, so the permissiveness claim above ships eighteen working proofs of itself, in the house extension.
+**Note**: All three extensions are parsed identically — and every example in [`examples/`](examples/) ships as `.json` *with comments inside*, so the permissiveness claim above ships twenty working proofs of itself, in the house extension.
 
 ---
 
@@ -476,7 +476,7 @@ claude = 200000
 
 ## Example Policies
 
-The desk still arrives empty — `policies/` is local-only (`DO NOT COMMIT`), the crate ships no gates, and what she enforces is entirely what you compile. But the repo ships the curriculum: [`examples/`](examples/) — eighteen heavily-commented gates (thirteen fundamentals, three advanced merges, two that read the session), a minimal annotated `config.toml`, and one example rule. Copy what you like into your `policies/`, adjust, and `karen validate`. She doesn't ship opinions; she ships her lectures, which are yours to assign.
+The desk still arrives empty — `policies/` is local-only (`DO NOT COMMIT`), the crate ships no gates, and what she enforces is entirely what you compile. But the repo ships the curriculum: [`examples/`](examples/) — twenty heavily-commented gates (thirteen fundamentals, three advanced merges, four that read the session), a minimal annotated `config.toml`, and one example rule. Copy what you like into your `policies/`, adjust, and `karen validate`. She doesn't ship opinions; she ships her lectures, which are yours to assign.
 
 The full syntax lives in [Writing a Gate](#writing-a-gate) above, and every category in "What people encode" below has working files in `examples/gates/`. The Karen who ships the desk, the curriculum, and not one opinion about your house.
 
@@ -544,7 +544,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-274 tests passing (38 unit, 20 integration, 216 e2e — zero ignored). The Karen
+276 tests passing (38 unit, 20 integration, 218 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

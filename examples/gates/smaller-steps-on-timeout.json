@@ -1,0 +1,40 @@
+// Example 16 — answer a failed provider call with the right instruction.
+// Teaches: `facts.provider_error`, the provider's own last failure
+// (an object carrying `message`), and a `field_regex` on a nested path. A turn
+// that died on a timeout, a 529 or an overload tends to die the same way
+// again if it is asked for the same big step; so the Stop is held once with
+// the failure quoted back and a smaller instruction. The Karen who reads the
+// error message the agent never saw.
+//
+// Where the fact comes from: Claude Code from the transcript's last API
+// error, Codex from the rollout's last `error` event, OpenCode from its
+// plugin (which never delivers the error to the agent, so it is carried into
+// the Stop review as this fact). A turn that recovered has no error and the
+// fact is absent: absence is never a match.
+{
+  "id": "smaller-steps-on-timeout",
+  "name": "Take smaller steps after a failed provider call",
+  "description": "On a timed-out or overloaded turn, hold the stop once with the provider's message and tell the agent to take smaller steps.",
+  "event": "Stop",
+  "priority": 50,
+  "enabled": true,
+  "tags": ["facts", "provider-error", "recovery"],
+
+  "match": {
+    "all": [
+      { "type": "field_regex", "field": "facts.provider_error.message", "pattern": "timed out|529|overloaded" }
+    ],
+    // A held Stop comes back with stop_hook_active on every later Stop of
+    // that turn. Exempting it holds the stop once, not forever.
+    "none": [
+      { "type": "field_equals", "field": "stop_hook_active", "value": true }
+    ]
+  },
+
+  "action": {
+    "type": "deny",
+    // {facts.provider_error.message} renders the fact; the gate names it in
+    // `match`, which is what makes her collect it.
+    "reason": "The provider failed: {facts.provider_error.message} — take smaller steps: one file, one command, one test, then continue."
+  }
+}

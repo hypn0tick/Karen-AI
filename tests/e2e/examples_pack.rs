@@ -40,11 +40,11 @@ fn examples_env() -> TestEnv {
             copied += 1;
         }
     }
-    // The pack ships eighteen files — thirteen fundamentals (one holding
+    // The pack ships twenty files — thirteen fundamentals (one holding
     // two gates), three advanced merges (holding two, two, and three) and
     // the session-aware gates. If this number changes, she wants to know about it here
     // first — she counts, then counts again.
-    assert_eq!(copied, 18, "expected all eighteen example gate files");
+    assert_eq!(copied, 20, "expected all twenty example gate files");
 
     std::fs::copy(
         examples_root.join("rule-00-briefing.md"),
@@ -122,7 +122,7 @@ fn post_tool_write(session: &str, content: &str) -> String {
 
 #[test]
 fn karen_examples_pack_validates_exactly_as_shipped() {
-    // The whole pack, compiled and counted: twenty-three gates across eighteen
+    // The whole pack, compiled and counted: twenty-five gates across twenty
     // files, one delivered rule. She grades the curriculum before she
     // teaches it. When the pack grows, update the count here — the
     // count is a feature, not a chore.
@@ -137,8 +137,8 @@ fn karen_examples_pack_validates_exactly_as_shipped() {
         .filter(|g| g["layer"] == "project")
         .count();
     assert_eq!(
-        shipped, 23,
-        "the pack ships exactly twenty-three gates — she counted twice"
+        shipped, 25,
+        "the pack ships exactly twenty-five gates — she counted twice"
     );
     assert_eq!(
         data["rule_count"].as_u64(),
@@ -268,6 +268,83 @@ fn karen_examples_compress_latch_fires_once_per_filling() {
     assert_hook_allow(&stop(350));
     assert_hook_allow(&stop(200));
     assert!(stop(450).contains("compress tool"), "re-armed, holds again");
+}
+
+/// A payload for a turn the provider failed, with the failure as the
+/// `OpenCode` bridge carries it. `stop_hook_active` marks a retried stop.
+fn provider_failure(event: &str, session: &str, message: Option<&str>, retry: bool) -> String {
+    let mut payload = serde_json::json!({
+        "hook_event_name": event,
+        "session_id": session,
+        "facts": { "runtime": "opencode" },
+    });
+    if let Some(message) = message {
+        payload["facts"]["provider_error"] = serde_json::json!({ "message": message });
+    }
+    if retry {
+        payload["stop_hook_active"] = serde_json::json!(true);
+    }
+    payload.to_string()
+}
+
+#[test]
+fn karen_examples_smaller_steps_quotes_the_failure_once() {
+    // A timed-out turn is held at Stop with the provider's own words; the
+    // retry of that stop passes; a turn that did not fail is left alone.
+    let env = examples_env();
+    let stop = |message, retry| {
+        let (code, stdout, _) = env.run_hook(
+            &provider_failure("Stop", "ex-smaller", message, retry),
+            &["--runtime", "opencode"],
+        );
+        assert_eq!(code, 0);
+        stdout
+    };
+    let held = stop(Some("request timed out after 60s"), false);
+    assert!(
+        held.contains("request timed out after 60s") && held.contains("take smaller steps"),
+        "held with the provider's words: {held}"
+    );
+    assert_hook_allow(&stop(Some("request timed out after 60s"), true));
+    assert_hook_allow(&stop(None, false));
+    assert_hook_allow(&stop(Some("invalid api key"), false));
+}
+
+#[test]
+fn karen_examples_provider_failures_are_written_to_the_notify_log() {
+    // The call proceeds, and one line in the notify log carries the gate and
+    // the rendered failure; no message, no line.
+    let env = examples_env();
+    let fail = |message| {
+        let (code, _, _) = env.run_hook(
+            &provider_failure("ProviderError", "ex-notify", message, false),
+            &["--runtime", "opencode"],
+        );
+        assert_eq!(code, 0);
+    };
+    fail(None);
+    let log = env
+        .home_dir
+        .join(".karen")
+        .join("logs")
+        .join("karen-notify.jsonl");
+    assert!(
+        std::fs::read_to_string(&log).unwrap_or_default().is_empty(),
+        "no message, no line"
+    );
+    fail(Some("provider overloaded"));
+    let lines: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+        .expect("the notify log")
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    assert_eq!(lines.len(), 1, "one line per failure: {lines:?}");
+    assert_eq!(lines[0]["gate"], "log-provider-failures");
+    assert_eq!(lines[0]["session"], "ex-notify");
+    assert_eq!(
+        lines[0]["text"],
+        "Provider call failed: provider overloaded"
+    );
 }
 
 #[test]
