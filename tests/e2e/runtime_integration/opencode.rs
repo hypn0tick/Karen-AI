@@ -1302,3 +1302,225 @@ console.log(JSON.stringify({ held, after: prompts.slice(1) }));
         "a reviewed stop is not re-held: {after:?}"
     );
 }
+
+/// The bridge installed into a project of its own, as `(project dir, plugin url)`.
+fn install_bridge(env: &TestEnv) -> (std::path::PathBuf, String) {
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+    (project_dir, url)
+}
+
+/// Run a node driver against the installed bridge and parse the JSON line it
+/// prints. `__PLUGIN__` and `__DIR__` in the script are filled in.
+fn drive(
+    env: &TestEnv,
+    plugin_url: &str,
+    project_dir: &std::path::Path,
+    driver: &str,
+) -> serde_json::Value {
+    let script = env.temp_dir.path().join("drive-bridge.mjs");
+    fs::write(
+        &script,
+        driver.replace("__PLUGIN__", plugin_url).replace(
+            "__DIR__",
+            &project_dir.display().to_string().replace('\\', "/"),
+        ),
+    )
+    .unwrap();
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap()
+}
+
+#[test]
+#[serial]
+fn karen_opencode_plugin_holds_a_prompt_once_and_hears_the_compaction() {
+    // OpenCode's `chat.message` hook is its UserPromptSubmit: the shipped
+    // nudge holds the prompt once at 85%, the retry goes through with her
+    // warning on it, and a `session.compacted` event is her PostCompact: it
+    // wipes the nudge's strike so the next filling is heard again. The tokens
+    // of the compacted context are not the tokens of the new one, so the bridge
+    // forgets them too (and never counts the compaction's own summary message),
+    // and a prompt sent before the next reply measures nothing instead of the
+    // stale 90%.
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::new();
+    fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("gates")
+            .join("nudge-before-the-window-fills.json"),
+        env.policies_dir
+            .join("gates")
+            .join("nudge-before-the-window-fills.json"),
+    )
+    .unwrap();
+    let (project_dir, plugin_url) = install_bridge(&env);
+    let driver = r#"
+const { KarenAI } = await import("__PLUGIN__");
+const client = {
+  session: { get: async () => ({ data: { parentID: null } }) },
+  config: { providers: async () => ({ data: { providers: [{ id: "mock", models: { big: { limit: { context: 1000 } } } }], default: null } }) }
+};
+const hooks = await KarenAI({ directory: "__DIR__", client });
+const reply = (tokens) => hooks.event({ event: { type: "message.updated", properties: { sessionID: "s1", info: { role: "assistant", id: "a" + tokens, providerID: "mock", modelID: "big", tokens: { input: tokens, output: 1, cache: { read: 0, write: 0 } } } } } });
+const submit = async (text) => {
+  const output = { message: { id: "m1", sessionID: "s1", role: "user" }, parts: [{ id: "prt_1", sessionID: "s1", messageID: "m1", type: "text", text }] };
+  try {
+    await hooks["chat.message"]({ sessionID: "s1", messageID: "m1" }, output);
+    return { blocked: null, added: output.parts.slice(1) };
+  } catch (e) {
+    return { blocked: e.message, added: output.parts.slice(1) };
+  }
+};
+const result = {};
+await reply(100);
+result.roomy = await submit("hello");
+await reply(900);
+result.first = await submit("hello again");
+result.retry = await submit("hello again");
+await hooks.event({ event: { type: "session.compacted", properties: { sessionID: "s1" } } });
+// The compaction's own summary message counted the context it replaced.
+await hooks.event({ event: { type: "message.updated", properties: { sessionID: "s1", info: { role: "assistant", id: "sum", summary: true, providerID: "mock", modelID: "big", tokens: { input: 900, output: 80, cache: { read: 0, write: 0 } } } } } });
+result.unmetered = await submit("after the compaction");
+await reply(950);
+result.refilled = await submit("full again");
+console.log(JSON.stringify(result));
+"#;
+    let result = drive(&env, &plugin_url, &project_dir, driver);
+
+    assert_eq!(
+        result["roomy"]["blocked"],
+        serde_json::Value::Null,
+        "{result}"
+    );
+    assert_eq!(
+        result["roomy"]["added"].as_array().map(Vec::len),
+        Some(0),
+        "{result}"
+    );
+    let first = result["first"]["blocked"].as_str().expect("held");
+    assert!(
+        first.starts_with("Karen-AI:") && first.contains("over 85% full"),
+        "the nudge holds the prompt with her reason: {first}"
+    );
+    assert_eq!(
+        result["retry"]["blocked"],
+        serde_json::Value::Null,
+        "{result}"
+    );
+    let added = result["retry"]["added"].as_array().unwrap();
+    assert_eq!(
+        added.len(),
+        1,
+        "the retry carries her warning once: {result}"
+    );
+    assert_eq!(added[0]["type"], "text");
+    assert_eq!(added[0]["synthetic"], true);
+    assert_eq!(added[0]["sessionID"], "s1");
+    assert_eq!(added[0]["messageID"], "m1");
+    let text = added[0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("[Karen-AI]") && text.contains("over 85% full"),
+        "the warning is agent-visible: {text}"
+    );
+    assert!(
+        added[0]["id"].as_str().unwrap() > "prt_1",
+        "the added part sorts after the prompt it rides with: {result}"
+    );
+    assert!(
+        !text.contains("Edit and Commit Core Rules"),
+        "rules ride the system prompt, never the user's message: {text}"
+    );
+    assert_eq!(
+        result["unmetered"]["blocked"],
+        serde_json::Value::Null,
+        "after a compaction the old tokens are not a measurement: {result}"
+    );
+    assert!(
+        result["refilled"]["blocked"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("over 85% full")),
+        "a compaction wipes the strike, so the next filling is held again: {result}"
+    );
+}
+
+#[test]
+#[serial]
+fn karen_opencode_plugin_shows_the_prompt_to_prompt_gates() {
+    // A prompt gate reads the user's own words: the text parts they typed,
+    // not the synthetic ones OpenCode adds for attachments.
+    const NO_SHIPPING_FRIDAYS: &str = r#"{
+  "id": "no-friday-deploys",
+  "description": "Refuse a prompt asking to deploy on a Friday.",
+  "event": "UserPromptSubmit",
+  "match": { "all": [ { "type": "prompt_regex", "pattern": "deploy on friday" } ] },
+  "action": { "type": "deny", "reason": "No Friday deploys." }
+}"#;
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::with_config(
+        crate::e2e::common::DEFAULT_CONFIG,
+        &[crate::e2e::common::GateFixture {
+            file: "no-friday-deploys.json",
+            content: NO_SHIPPING_FRIDAYS,
+        }],
+        &[],
+    );
+    let (project_dir, plugin_url) = install_bridge(&env);
+    let driver = r#"
+const { KarenAI } = await import("__PLUGIN__");
+const hooks = await KarenAI({ directory: "__DIR__" });
+const submit = async (parts) => {
+  const output = { message: { id: "m1", sessionID: "s1", role: "user" }, parts: parts.map((p, i) => ({ id: "prt_" + i, sessionID: "s1", messageID: "m1", type: "text", ...p })) };
+  try { await hooks["chat.message"]({ sessionID: "s1" }, output); return "allowed"; } catch (e) { return e.message; }
+};
+console.log(JSON.stringify({
+  typed: await submit([{ text: "please deploy on friday" }]),
+  attached: await submit([{ text: "read this" }, { text: "deploy on friday", synthetic: true }]),
+  elsewhere: await submit([{ text: "deploy on monday" }]),
+}));
+"#;
+    let result = drive(&env, &plugin_url, &project_dir, driver);
+    assert!(
+        result["typed"]
+            .as_str()
+            .unwrap()
+            .contains("No Friday deploys."),
+        "{result}"
+    );
+    assert_eq!(
+        result["attached"], "allowed",
+        "synthetic parts are not the user's words: {result}"
+    );
+    assert_eq!(result["elsewhere"], "allowed");
+}

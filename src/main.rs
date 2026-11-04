@@ -1483,7 +1483,9 @@ const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API 
 // Occupancy facts ride the payload too: the session's context tokens (kept current by
 // `message.updated`) and its model's context window (resolved once per session), so a
 // gate on `facts.context_ratio` runs on OpenCode without reading anything itself. The
-// provider's own failures (`session.error`) ride the Stop review the same way.
+// provider's own failures (`session.error`) ride the Stop review the same way. A prompt is
+// reviewed as a UserPromptSubmit through the `chat.message` hook, and a compaction
+// (`session.compacted`) is her PostCompact, so `reset_on_compact` works here too.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -1567,8 +1569,9 @@ const lastAssistant = (messages) => {
   return {
     id: m.info.id,
     text: (m.parts ?? []).filter((p) => p.type === "text").map((p) => p.text).join("\n"),
-    // Context tokens as Karen counts them: input plus both cache counts.
-    tokens: t ? (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0) : 0,
+    // Context tokens as Karen counts them: input plus both cache counts. A compaction's own
+    // summary message counted the context it replaced, so it measures nothing of the new one.
+    tokens: t && !m.info.summary ? (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0) : 0,
     // The model this message ran on, which decides the window its tokens fill.
     model: m.info.providerID && m.info.modelID ? { providerID: m.info.providerID, modelID: m.info.modelID } : undefined,
   };
@@ -1684,7 +1687,7 @@ export const KarenAI = async ({ directory, client }) => {
           // again: the provider's last failure stops being a fact the moment a
           // later call gets through.
           if (sid && info.time?.completed && !info.error) errors.delete(sid);
-          const tokens = t ? (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0) : 0;
+          const tokens = t && !info.summary ? (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0) : 0;
           // Tokens and the model they were counted on travel together, so a ratio never
           // divides one model's tokens by another's window.
           if (sid && tokens > 0) {
@@ -1707,6 +1710,18 @@ export const KarenAI = async ({ directory, client }) => {
           errors.set(sid, { message, ...(model ? { provider: model.providerID, model: model.modelID } : {}) });
         }
         await karen({ hook_event_name: "ProviderError", session_id: sid, cwd: directory, facts: { runtime: "opencode", ...(sid && errors.has(sid) ? { provider_error: errors.get(sid) } : {}) } });
+        return;
+      }
+      // A compaction is the runtime's PostCompact: the context was rebuilt, so every
+      // `reset_on_compact` gate forgets its strikes. The tokens counted on the old context are
+      // not a measurement of the new one, so they are dropped too; the fact stays absent until
+      // the next reply reports a count, and absence is never a match.
+      if (event?.type === "session.compacted") {
+        const sid = event?.properties?.sessionID;
+        if (sid) {
+          lastTokens.delete(sid);
+          await karen({ hook_event_name: "PostCompact", session_id: sid, cwd: directory });
+        }
         return;
       }
       // A deleted session's entries are dropped the moment it is, so a long-running
@@ -1787,6 +1802,29 @@ export const KarenAI = async ({ directory, client }) => {
         rules.set(sid, parts.join("\n\n"));
       }
       if (rules.get(sid)) output.system.push(rules.get(sid));
+    },
+    // OpenCode's UserPromptSubmit. The user's own words are the text parts they typed; a
+    // synthetic part is OpenCode's own (an attachment read for the model) or another plugin's.
+    // A block throws, as a tool block does, so the prompt never becomes a message. Rules are
+    // not delivered here (they ride the system prompt above); only her notices ride along,
+    // as one synthetic part the agent reads, sorted after the part it follows.
+    "chat.message": async (input, output) => {
+      const sid = input?.sessionID ?? output?.message?.sessionID;
+      const parts = output?.parts ?? [];
+      const prompt = parts.filter((p) => p?.type === "text" && !p.synthetic && !p.ignored).map((p) => p.text).join("\n");
+      const out = await karen({ hook_event_name: "UserPromptSubmit", session_id: sid, cwd: directory, prompt, facts: await contextFacts(sid) });
+      if (out.decision === "block") throw new Error(`Karen-AI: ${out.reason ?? "blocked by policy"}`);
+      const message = notice(sid, out.systemMessage);
+      if (!message) return;
+      const last = parts[parts.length - 1]?.id;
+      parts.push({
+        id: last ? `${last}z` : `prt_karen${randomUUID().replaceAll("-", "")}`,
+        sessionID: sid,
+        messageID: output?.message?.id,
+        type: "text",
+        text: `[Karen-AI] ${message}`,
+        synthetic: true,
+      });
     },
     "tool.execute.before": async (input, output) => {
       const out = await karen({ hook_event_name: "PreToolUse", session_id: input.sessionID, cwd: directory, tool_name: toolName(input.tool), tool_input: output.args, facts: await contextFacts(input.sessionID) });

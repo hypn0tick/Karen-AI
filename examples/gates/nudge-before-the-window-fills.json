@@ -13,8 +13,9 @@
 // ratio is absent, and absence is never a match. She does not guess a window.
 //
 // The event is the other limit: it runs where the runtime delivers a
-// UserPromptSubmit (Claude Code and Codex). OpenCode's plugin does not send
-// one, so there the same idea belongs on an event it does send.
+// UserPromptSubmit and, for reset_on_compact, a compaction: Claude Code, Codex
+// and OpenCode all do (OpenCode's bridge forgets the old context's tokens at
+// the compaction, so the first prompt after it is not nudged on a stale ratio).
 {
   "id": "nudge-before-the-window-fills",
   "name": "Compact before the window fills",

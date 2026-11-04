@@ -63,7 +63,7 @@ A gate that never fires on a fact is almost always one of four things. In the or
    ```
 
    A `facts` block in the payload is source number one above, so this tests the gate without a transcript. For an environment fact, set the variable on the command (`HCOM_INSTANCE=luna karen evaluate …`) and allowlist it in your user layer.
-3. **Is it the right event?** The runtime has to deliver it — see the [events table](../README.md#events). OpenCode sends no `UserPromptSubmit` and no compaction events, so a gate on one of those never runs there.
+3. **Is it the right event?** The runtime has to deliver it — see the [events table](../README.md#events). OpenCode sends `UserPromptSubmit` (its `chat.message` hook) and `PostCompact` (its `session.compacted` event), but no `PreCompact`, `SessionEnd` or `SubagentStart`, so a gate on one of those never runs there.
 4. **Is the state what you think?** `karen evaluate` is a dry run: it never writes state, so a strike or a latch will not move under it. Run the real `karen hook` twice with the same payload to see a `deny_once_then_warn` or a latch change its answer.
 
 The pack's [`examples/`](../examples/README.md) carry one tested gate for each fact family: the occupancy pair, the provider-error pair and the lanes gate.
