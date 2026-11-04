@@ -1,4 +1,4 @@
-//! The control endpoint: how a short-lived `karen hook` (or `karen deliver`) process asks the
+//! The control endpoint: how a short-lived `karen hook` process asks the
 //! long-lived `karen run` process about its screen, or has it type a line. The Karen who answers the
 //! door, but only to people who know the password.
 //!

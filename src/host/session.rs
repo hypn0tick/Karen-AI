@@ -6,7 +6,7 @@
 //! * the **reader** copies the runtime's output to the real terminal and draws it on the `vt100`
 //!   screen (answering `ConPTY`'s cursor query as it goes);
 //! * the **keyboard** copies the real terminal's input to the runtime, byte for byte;
-//! * the **endpoint** answers `karen hook` and `karen deliver` processes;
+//! * the **endpoint** answers `karen hook` processes;
 //! * the **resizer** follows the real terminal's size;
 //! * the main thread waits for the runtime to exit and returns its exit code.
 //!
