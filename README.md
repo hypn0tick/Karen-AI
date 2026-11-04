@@ -226,6 +226,7 @@ A gate can read what the session's runtime actually has instead of someone remem
 | `facts.context_ratio` | `context_tokens` over `context_window` | both of the above; **absent when either side is** |
 | `facts.session_id` | the session's own id, as the payload said it | the payload itself; absent when the payload carries none |
 | `facts.env.<NAME>` | the environment variable's value, read from Karen's own environment | **only** the names the user layer allowlisted in `[facts] env` (`~/.karen/policies/config.toml`) |
+| `facts.provider_error` | the provider's own last failure: an object carrying `message` (and Claude Code's `model`, as the entry carries it) | Claude Code: the transcript's last `isApiErrorMessage` entry; Codex: the rollout's last `error` event (`event_msg`/`error`, per the codex-rs source — `codex-rs/protocol/src/protocol.rs`, openai/codex @ ac4332c); OpenCode: the bridge caches `session.error` and carries it into the Stop review. **Absent when a later assistant entry succeeds** — a stale apology is not a fact |
 
 `runtime`, `mcp_servers` and `tools` are cached for the session; `git_uncommitted` and the occupancy facts are read fresh on every call that needs them. An unreadable fact is absent, never zero: a closed Codex rollout is zstd and she does not decompress it, a missing transcript says nothing, and a gate matching a numeric condition on an absent fact stays quiet.
 
@@ -273,10 +274,15 @@ Back to facts that gate existence rather than occupancy: a gate that should only
 | Type                   | Meaning                  | The Karen Who...                             |
 | ---------------------- | ------------------------ | -------------------------------------------- |
 | `allow`                | Proceed                  | steps aside                                  |
-| `deny`                 | Block with reason        | says no, and has the policy to back it up    |
-| `ask`                  | Ask human                | escalates, because you need adult supervision |
-| `modify`               | Rewrite command          | gets fed up and just does it for you         |
+| `deny`                 | Block with reason         | says no, and has the policy to back it up    |
+| `ask`                  | Ask human                 | escalates, because you need adult supervision |
+| `modify`               | Rewrite command           | gets fed up and just does it for you         |
 | `deny_once_then_warn`  | First deny, then allow on retry | teaches once                            |
+| `notify`               | Say it and proceed         | files the complaint and lets you through     |
+
+A `notify` reason lands in the session as a notice and as one JSON line — `time`, `session`, `gate`, `text` — in `<Karen home>/logs/karen-notify.jsonl`, rotated to `.jsonl.1` past 10 MiB. An orchestrator tails the log; the agent sees the notice; the call proceeds. `karen evaluate` rehearses a notify without filing the line.
+
+Reasons render `{gate}`, `{tool}`, `{command}`, and `{facts.<path>}`: the rendered fact from the enriched request — a string as itself, anything else as its compact JSON, an absent fact as `(unknown)`, never the empty string that reads like a value. The one fact never rendered is `facts.env.*`: the allowlist granted a match, not a broadcast into reasons, notices and the log, so the placeholder stays literal — and `karen validate` names a reason that templates one.
 
 ### State (deny_once_then_warn)
 
@@ -312,6 +318,27 @@ The Karen who remembers. Strike one: denied, with an explanation and a lecture. 
 ```
 
 The re-arm is checked on every dispatch, matched or not — a gate that fires at 40% occupancy can never match below 30%, so a latch that waited for its own match to clear would stay shut for good. The field dipping below the line clears it, climbing back over the gate's bar fires again, and `reset_on_compact` clears it as ever, because a compaction is the window emptying. The armed value is a timestamp, so the ledger says when the gate last fired, not just that it did. The Karen who trips the breaker once per overload, not once per sneeze.
+
+---
+
+### Provider errors
+
+When the provider call itself fails — the timeout, the 529, the overload — the failure is `ProviderError`, an event a gate can be written for, and `facts.provider_error`, a fact a gate can branch on. The case it exists for: a timed-out turn whose Stop gate denies blindly, so the agent restarts the same long deliberation and times out again. Said out loud, the agent takes smaller steps:
+
+```json
+{
+  "id": "smaller-steps",
+  "description": "On a timed-out turn, tell the agent what failed and to take smaller steps.",
+  "event": "Stop",
+  "match": {
+    "all": [ { "type": "field_regex", "field": "facts.provider_error.message", "pattern": "timed out|529|overloaded" } ],
+    "none": [ { "type": "field_equals", "field": "stop_hook_active", "value": true } ]
+  },
+  "action": { "type": "deny", "reason": "The provider failed: {facts.provider_error.message} — take smaller steps: one file, one command, one test, then continue." }
+}
+```
+
+OpenCode never delivers the error to the agent, so its bridge caches `session.error` and carries it into the Stop review as the fact. Claude Code and Codex read it from their transcripts' last error entry; an orchestrator tails the notify log with a `ProviderError` gate on `notify`. The fact clears the moment a later assistant message completes clean — a stale apology is not a fact.
 
 ---
 
@@ -498,7 +525,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-243 tests passing (35 unit, 20 integration, 188 e2e — zero ignored). The Karen
+257 tests passing (35 unit, 20 integration, 202 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
