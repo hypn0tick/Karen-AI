@@ -83,6 +83,8 @@ fn run(
         .env("KAREN_HOME", env.home_dir.join(".karen"))
         .env("KAREN_POLICIES", &env.policies_dir)
         .env("KAREN_BIN", &env.karen_binary)
+        // The bridge falls back to OPENCODE_CONFIG's model; an ambient one would decide the test.
+        .env_remove("OPENCODE_CONFIG")
         .envs(extra_env.iter().copied())
         .output()
         .unwrap();
