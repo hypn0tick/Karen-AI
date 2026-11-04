@@ -1,10 +1,10 @@
 # Example Gates — the starter pack
 
-**Twenty heavily-commented gates: thirteen fundamentals, three advanced merges, four that read the session. Plus a minimal `config.toml` and one example rule.** They are not the author's rules — they are his lectures, yours to assign. Copy what you like into `~/.karen/policies/gates/` (every project) or a project's `.karen/policies/gates/`, adjust to taste, and run `karen validate`. The Karen who ships the desk, the curriculum, and none of her opinions about your house.
+**Twenty-one heavily-commented gates: thirteen fundamentals, three advanced merges, five that read the session. Plus a minimal `config.toml` and one example rule.** They are not the author's rules — they are his lectures, yours to assign. Copy what you like into `~/.karen/policies/gates/` (every project) or a project's `.karen/policies/gates/`, adjust to taste, and run `karen validate`. The Karen who ships the desk, the curriculum, and none of her opinions about your house.
 
 Two things worth noticing before you copy anything:
 
-1. **Every file is `.json` — with comments in it.** That's not a typo; the loader parses all extensions through the same engine, and comments in `.json` files are the house style. The permissiveness claim in the README ships twenty proofs of itself in this directory.
+1. **Every file is `.json` — with comments in it.** That's not a typo; the loader parses all extensions through the same engine, and comments in `.json` files are the house style. The permissiveness claim in the README ships twenty-one proofs of itself in this directory.
 2. **Every regex here avoids lookaheads.** The engine uses Rust's regex crate, which doesn't have them — exclusion is the `none` block, and it's a first-class citizen. When you write your own gates, reach for `none` instead of `(?!...)`, or she will hand you a `POLICY_INVALID` envelope and a look.
 
 ## The fundamentals (one mechanism each)
@@ -35,7 +35,7 @@ Two things worth noticing before you copy anything:
 
 ## Gates that read the session
 
-These read what the session's runtime actually has — the context window's occupancy, the provider's last failure — instead of what someone remembers. They need no setup: where a fact is unknown it is absent and the gate stays quiet. (`config.toml` carries the one number she cannot read for Claude Code, the window.)
+These read what the session's runtime actually has — the context window's occupancy, the provider's last failure, which session is asking — instead of what someone remembers. Where a fact is unknown it is absent and the gate stays quiet. Only the last one needs setup: she reads an environment variable only if your own `~/.karen/policies/config.toml` allowlists it, and says so in `karen validate` when a gate names one that is not. (`config.toml` carries the one number she cannot read for Claude Code, the window.)
 
 | File | Verdict | Teaches |
 | ---- | ------- | ------- |
@@ -43,6 +43,7 @@ These read what the session's runtime actually has — the context window's occu
 | `compress-finished-work.json` | deny on `Stop` | the latch: `state.field` plus `rearm_below` fire once per filling, then stay quiet until the window falls back |
 | `smaller-steps-on-timeout.json` | deny on `Stop` | `facts.provider_error`, a nested `field_regex`, and `{facts.…}` in a reason: the failure quoted back |
 | `log-provider-failures.json` | notify | the `ProviderError` event and the `notify` action: a notice for the agent and a line in `karen-notify.jsonl` |
+| `lanes-do-not-push.json` | deny | `facts.env.<NAME>` and the user layer's `[facts] env` allowlist: which session is asking, and an exemption for the one that may |
 
 ## The law of the land (verified from the dispatcher)
 

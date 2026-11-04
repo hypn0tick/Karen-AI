@@ -1,0 +1,49 @@
+// Example 18 — who is asking. Teaches: `facts.env.<NAME>`, a variable read
+// from Karen's own environment, which is how a gate learns the identity of
+// the session it is judging. Here a fleet of agent lanes (each started with
+// HCOM_INSTANCE set to its name) may not `git push`; the one named
+// orchestrator may. A session with no HCOM_INSTANCE at all is not a lane and
+// is not touched. The Karen who knows which badge you are wearing.
+//
+// SETUP, and why this gate is silent without it: she reads an environment
+// variable only if the USER layer allowlisted its name, in
+// ~/.karen/policies/config.toml:
+//
+//     [facts]
+//     env = ["HCOM_INSTANCE"]
+//
+// A project layer cannot grant that, on purpose: repository content never
+// chooses which of your variables a gate may read. Without the entry the fact
+// stays absent, this gate never matches, and `karen validate` says so. Edit
+// "orchestrator" below to the name of the instance that may push.
+//
+// Env facts match; they never render. A reason that templates
+// {facts.env.NAME} would print the placeholder, so this one is plain text.
+{
+  "id": "lanes-do-not-push",
+  "name": "Only the orchestrator pushes",
+  "description": "Deny git push for any session whose HCOM_INSTANCE is set, except the orchestrator. Needs HCOM_INSTANCE on the user layer's [facts] env allowlist.",
+  "event": "PreToolUse",
+  "tool": "Bash",
+  "priority": 70,
+  "enabled": true,
+  "tags": ["facts", "identity", "env"],
+
+  "match": {
+    "all": [
+      { "type": "command_regex", "pattern": "\\bgit\\s+push\\b" },
+      // Any non-empty value: this is a lane. An unset or unlisted variable
+      // is absent, and absence is not a match.
+      { "type": "field_regex", "field": "facts.env.HCOM_INSTANCE", "pattern": "." }
+    ],
+    "none": [
+      // The exemption: the one session that is allowed to push.
+      { "type": "field_equals", "field": "facts.env.HCOM_INSTANCE", "value": "orchestrator" }
+    ]
+  },
+
+  "action": {
+    "type": "deny",
+    "reason": "Lanes do not push. Commit on your branch and tell the orchestrator; it pushes."
+  }
+}

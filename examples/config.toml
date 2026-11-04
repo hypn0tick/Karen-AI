@@ -48,7 +48,9 @@ tools = ["git", "rg", "sd", "yq", "jq", "shellcheck", "ast-grep", "difft", "uv",
 # named by `karen validate`, because repository content never names what she
 # may read. A gate matching a variable off this list can never fire, and
 # `karen validate` names that gate too. The Karen who reads off a list the
-# user wrote, in the user's handwriting, and no one else's.
+# user wrote, in the user's handwriting, and no one else's. The example
+# `lanes-do-not-push.json` reads `facts.env.HCOM_INSTANCE`, so it needs
+# `env = ["HCOM_INSTANCE"]` in ~/.karen/policies/config.toml, not here.
 env = []
 
 [facts.context_window]

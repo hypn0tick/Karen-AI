@@ -23,6 +23,21 @@ fn examples_env() -> TestEnv {
     std::fs::create_dir_all(policies_dir.join("gates")).expect("gates dir");
     std::fs::create_dir_all(policies_dir.join("rules")).expect("rules dir");
     std::fs::create_dir_all(&home_dir).expect("home dir");
+    // The user layer the pack's lanes gate documents: she reads an env
+    // variable only if the user's own config allowlisted it. Without this the
+    // gate is silent and every verdict carries her warning about it.
+    let user_layer = home_dir.join(".karen").join("policies");
+    std::fs::create_dir_all(user_layer.join("gates")).expect("user gates dir");
+    std::fs::create_dir_all(user_layer.join("rules")).expect("user rules dir");
+    std::fs::write(
+        user_layer.join("config.toml"),
+        "# User layer.
+
+[facts]
+env = [\"HCOM_INSTANCE\"]
+",
+    )
+    .expect("write user config");
 
     let config =
         std::fs::read_to_string(examples_root.join("config.toml")).expect("examples config");
@@ -40,11 +55,11 @@ fn examples_env() -> TestEnv {
             copied += 1;
         }
     }
-    // The pack ships twenty files — thirteen fundamentals (one holding
+    // The pack ships twenty-one files — thirteen fundamentals (one holding
     // two gates), three advanced merges (holding two, two, and three) and
     // the session-aware gates. If this number changes, she wants to know about it here
     // first — she counts, then counts again.
-    assert_eq!(copied, 20, "expected all twenty example gate files");
+    assert_eq!(copied, 21, "expected all twenty-one example gate files");
 
     std::fs::copy(
         examples_root.join("rule-00-briefing.md"),
@@ -122,7 +137,7 @@ fn post_tool_write(session: &str, content: &str) -> String {
 
 #[test]
 fn karen_examples_pack_validates_exactly_as_shipped() {
-    // The whole pack, compiled and counted: twenty-five gates across twenty
+    // The whole pack, compiled and counted: twenty-six gates across twenty-one
     // files, one delivered rule. She grades the curriculum before she
     // teaches it. When the pack grows, update the count here — the
     // count is a feature, not a chore.
@@ -137,8 +152,8 @@ fn karen_examples_pack_validates_exactly_as_shipped() {
         .filter(|g| g["layer"] == "project")
         .count();
     assert_eq!(
-        shipped, 25,
-        "the pack ships exactly twenty-five gates — she counted twice"
+        shipped, 26,
+        "the pack ships exactly twenty-six gates — she counted twice"
     );
     assert_eq!(
         data["rule_count"].as_u64(),
@@ -344,6 +359,61 @@ fn karen_examples_provider_failures_are_written_to_the_notify_log() {
     assert_eq!(
         lines[0]["text"],
         "Provider call failed: provider overloaded"
+    );
+}
+
+/// Her verdict on `git push` as the session named by `instance`, if any.
+fn push_as(env: &TestEnv, instance: Option<&str>) -> String {
+    let (code, stdout, _) = env.run_evaluate_stdin_with_env(
+        &pretool("ex-lane", "git push origin main"),
+        &["--json"],
+        &instance
+            .map(|name| ("HCOM_INSTANCE", name))
+            .into_iter()
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(code, 0, "{stdout}");
+    assert_json_ok(&stdout)["action"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn karen_examples_lanes_do_not_push_but_the_orchestrator_does() {
+    // With HCOM_INSTANCE on the user layer's allowlist: a lane is denied, the
+    // orchestrator passes, and a session that is no lane at all is untouched.
+    let env = examples_env();
+    assert_eq!(push_as(&env, Some("luna")), "deny");
+    assert_eq!(push_as(&env, Some("orchestrator")), "allow");
+    assert_eq!(push_as(&env, None), "allow");
+}
+
+#[test]
+fn karen_examples_lanes_gate_is_silent_without_the_allowlist_and_validate_says_so() {
+    // The failure mode the example documents: no allowlist, no fact, no
+    // match, and `karen validate` names the gate that can never fire.
+    let env = examples_env();
+    std::fs::remove_file(
+        env.home_dir
+            .join(".karen")
+            .join("policies")
+            .join("config.toml"),
+    )
+    .expect("remove the user layer's allowlist");
+    assert_eq!(push_as(&env, Some("luna")), "allow");
+    let (code, stdout, _) = env.run_karen(&["validate", "--json"]);
+    assert_eq!(code, 0, "a warning does not fail the pack: {stdout}");
+    let data = assert_json_ok(&stdout);
+    assert!(
+        data["issues"]
+            .as_array()
+            .expect("issues")
+            .iter()
+            .any(|i| i["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("`lanes-do-not-push`") && m.contains("allowlist"))),
+        "validate names the off-allowlist gate: {stdout}"
     );
 }
 
