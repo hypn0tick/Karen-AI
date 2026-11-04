@@ -23,22 +23,6 @@ fn examples_env() -> TestEnv {
     std::fs::create_dir_all(policies_dir.join("gates")).expect("gates dir");
     std::fs::create_dir_all(policies_dir.join("rules")).expect("rules dir");
     std::fs::create_dir_all(&home_dir).expect("home dir");
-    // The user layer the pack's lanes gate documents: she reads an env
-    // variable only if the user's own config allowlisted it. Without this the
-    // gate is silent and every verdict carries her warning about it.
-    let user_layer = home_dir.join(".karen").join("policies");
-    std::fs::create_dir_all(user_layer.join("gates")).expect("user gates dir");
-    std::fs::create_dir_all(user_layer.join("rules")).expect("user rules dir");
-    std::fs::write(
-        user_layer.join("config.toml"),
-        "# User layer.
-
-[facts]
-env = [\"HCOM_INSTANCE\"]
-",
-    )
-    .expect("write user config");
-
     let config =
         std::fs::read_to_string(examples_root.join("config.toml")).expect("examples config");
     std::fs::write(policies_dir.join("config.toml"), config).expect("write config");
@@ -362,6 +346,36 @@ fn karen_examples_provider_failures_are_written_to_the_notify_log() {
     );
 }
 
+/// Opt in to the lanes gate the way its header says: switch it on, and
+/// allowlist `HCOM_INSTANCE` in the user layer's own config.
+fn enable_lanes(env: &TestEnv, allowlist: bool) {
+    let gate = env
+        .policies_dir
+        .join("gates")
+        .join("lanes-do-not-push.json");
+    let text = std::fs::read_to_string(&gate).expect("lanes gate");
+    assert!(text.contains("\"enabled\": false"), "the pack ships it off");
+    std::fs::write(
+        &gate,
+        text.replace("\"enabled\": false", "\"enabled\": true"),
+    )
+    .expect("switch the lanes gate on");
+    if allowlist {
+        let user_layer = env.home_dir.join(".karen").join("policies");
+        std::fs::create_dir_all(user_layer.join("gates")).expect("user gates dir");
+        std::fs::create_dir_all(user_layer.join("rules")).expect("user rules dir");
+        std::fs::write(
+            user_layer.join("config.toml"),
+            "# User layer.
+
+[facts]
+env = [\"HCOM_INSTANCE\"]
+",
+        )
+        .expect("write user config");
+    }
+}
+
 /// Her verdict on `git push` as the session named by `instance`, if any.
 fn push_as(env: &TestEnv, instance: Option<&str>) -> String {
     let (code, stdout, _) = env.run_evaluate_stdin_with_env(
@@ -381,26 +395,40 @@ fn push_as(env: &TestEnv, instance: Option<&str>) -> String {
 
 #[test]
 fn karen_examples_lanes_do_not_push_but_the_orchestrator_does() {
-    // With HCOM_INSTANCE on the user layer's allowlist: a lane is denied, the
-    // orchestrator passes, and a session that is no lane at all is untouched.
+    // Switched on, with HCOM_INSTANCE on the user layer's allowlist: a lane is
+    // denied, the orchestrator passes, and a session that is no lane at all is
+    // untouched.
     let env = examples_env();
+    enable_lanes(&env, true);
     assert_eq!(push_as(&env, Some("luna")), "deny");
     assert_eq!(push_as(&env, Some("orchestrator")), "allow");
     assert_eq!(push_as(&env, None), "allow");
 }
 
 #[test]
-fn karen_examples_lanes_gate_is_silent_without_the_allowlist_and_validate_says_so() {
-    // The failure mode the example documents: no allowlist, no fact, no
-    // match, and `karen validate` names the gate that can never fire.
+fn karen_examples_lanes_gate_ships_off_and_the_pack_validates_silent() {
+    // The starter pack nags nobody: the lanes gate is disabled as shipped, so
+    // a lane's push passes even with the allowlist in place, and `karen
+    // validate` has no issue to report for the whole pack.
     let env = examples_env();
-    std::fs::remove_file(
-        env.home_dir
-            .join(".karen")
-            .join("policies")
-            .join("config.toml"),
-    )
-    .expect("remove the user layer's allowlist");
+    assert_eq!(push_as(&env, Some("luna")), "allow");
+    let (code, stdout, _) = env.run_karen(&["validate", "--json"]);
+    assert_eq!(code, 0, "{stdout}");
+    let data = assert_json_ok(&stdout);
+    assert_eq!(
+        data["issues"].as_array().map(Vec::len),
+        Some(0),
+        "the shipped pack validates without a word of complaint: {stdout}"
+    );
+}
+
+#[test]
+fn karen_examples_lanes_gate_is_silent_without_the_allowlist_and_validate_says_so() {
+    // The failure mode the example documents, once the gate is switched on:
+    // no allowlist, no fact, no match, and `karen validate` names the gate
+    // that can never fire.
+    let env = examples_env();
+    enable_lanes(&env, false);
     assert_eq!(push_as(&env, Some("luna")), "allow");
     let (code, stdout, _) = env.run_karen(&["validate", "--json"]);
     assert_eq!(code, 0, "a warning does not fail the pack: {stdout}");

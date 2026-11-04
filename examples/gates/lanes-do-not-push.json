@@ -5,28 +5,32 @@
 // orchestrator may. A session with no HCOM_INSTANCE at all is not a lane and
 // is not touched. The Karen who knows which badge you are wearing.
 //
-// SETUP, and why this gate is silent without it: she reads an environment
-// variable only if the USER layer allowlisted its name, in
-// ~/.karen/policies/config.toml:
+// SHIPPED OFF. This gate does nothing until you opt in, and it stays quiet
+// (no `karen validate` warning either) until then. To turn it on, two steps:
 //
-//     [facts]
-//     env = ["HCOM_INSTANCE"]
+//   1. Set "enabled" below to true. Edit "orchestrator" to the name of the
+//      instance that may push.
+//   2. Add the allowlist line to your own ~/.karen/policies/config.toml:
 //
-// A project layer cannot grant that, on purpose: repository content never
-// chooses which of your variables a gate may read. Without the entry the fact
-// stays absent, this gate never matches, and `karen validate` says so. Edit
-// "orchestrator" below to the name of the instance that may push.
+//        [facts]
+//        env = ["HCOM_INSTANCE"]
+//
+// She reads an environment variable only if the USER layer allowlisted its
+// name. A project layer cannot grant that, on purpose: repository content
+// never chooses which of your variables a gate may read. Turn the gate on
+// without the line and the fact stays absent, the gate never matches, and
+// `karen validate` names it.
 //
 // Env facts match; they never render. A reason that templates
 // {facts.env.NAME} would print the placeholder, so this one is plain text.
 {
   "id": "lanes-do-not-push",
   "name": "Only the orchestrator pushes",
-  "description": "Deny git push for any session whose HCOM_INSTANCE is set, except the orchestrator. Needs HCOM_INSTANCE on the user layer's [facts] env allowlist.",
+  "description": "Deny git push for any session whose HCOM_INSTANCE is set, except the orchestrator. Ships disabled; enable it and put HCOM_INSTANCE on the user layer's [facts] env allowlist.",
   "event": "PreToolUse",
   "tool": "Bash",
   "priority": 70,
-  "enabled": true,
+  "enabled": false,
   "tags": ["facts", "identity", "env"],
 
   "match": {

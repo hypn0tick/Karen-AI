@@ -35,7 +35,7 @@ Two things worth noticing before you copy anything:
 
 ## Gates that read the session
 
-These read what the session's runtime actually has — the context window's occupancy, the provider's last failure, which session is asking — instead of what someone remembers. Where a fact is unknown it is absent and the gate stays quiet. Only the last one needs setup: she reads an environment variable only if your own `~/.karen/policies/config.toml` allowlists it, and says so in `karen validate` when a gate names one that is not. (`config.toml` carries the one number she cannot read for Claude Code, the window.)
+These read what the session's runtime actually has — the context window's occupancy, the provider's last failure, which session is asking — instead of what someone remembers. Where a fact is unknown it is absent and the gate stays quiet. Only the last one needs setup, and it ships disabled so the pack stays quiet: switch it on, then allowlist the variable in your own `~/.karen/policies/config.toml` (she reads an environment variable only if that file names it, and says so in `karen validate` when an enabled gate names one that is not). (`config.toml` carries the one number she cannot read for Claude Code, the window.)
 
 | File | Verdict | Teaches |
 | ---- | ------- | ------- |
@@ -43,7 +43,7 @@ These read what the session's runtime actually has — the context window's occu
 | `compress-finished-work.json` | deny on `Stop` | the latch: `state.field` plus `rearm_below` fire once per filling, then stay quiet until the window falls back |
 | `smaller-steps-on-timeout.json` | deny on `Stop` | `facts.provider_error`, a nested `field_regex`, and `{facts.…}` in a reason: the failure quoted back |
 | `log-provider-failures.json` | notify | the `ProviderError` event and the `notify` action: a notice for the agent and a line in `karen-notify.jsonl` |
-| `lanes-do-not-push.json` | deny | `facts.env.<NAME>` and the user layer's `[facts] env` allowlist: which session is asking, and an exemption for the one that may |
+| `lanes-do-not-push.json` (off) | deny | `facts.env.<NAME>` and the user layer's `[facts] env` allowlist: which session is asking, and an exemption for the one that may |
 
 ## The law of the land (verified from the dispatcher)
 

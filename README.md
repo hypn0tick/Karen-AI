@@ -273,7 +273,7 @@ A gate can also ask which session it is judging. Start each agent with a variabl
 }
 ```
 
-An unset variable is absent, so a session that is no lane is never matched. Env facts match; they do not render, so a reason that templates `{facts.env.NAME}` keeps the placeholder as written. The shipped version is [`examples/gates/lanes-do-not-push.json`](examples/gates/lanes-do-not-push.json).
+An unset variable is absent, so a session that is no lane is never matched. Env facts match; they do not render, so a reason that templates `{facts.env.NAME}` keeps the placeholder as written. The shipped version is [`examples/gates/lanes-do-not-push.json`](examples/gates/lanes-do-not-push.json); it ships disabled, so the starter pack stays silent until you switch it on and add the allowlist line. A gate switched off reads nothing, and `karen validate` has no warning for it.
 
 The ratio is what a gate names when it means "how full the window is":
 
@@ -589,7 +589,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-281 tests passing (40 unit, 20 integration, 221 e2e — zero ignored). The Karen
+283 tests passing (40 unit, 20 integration, 223 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
