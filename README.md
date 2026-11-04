@@ -103,6 +103,7 @@ The `setup` command wires `karen hook` into each runtime where that runtime actu
 | `schema`   | Machine-readable command & type vocabulary | documents herself                    |
 | `completion` | Generate shell completions (bash, zsh, fish) | finishes your sentences, correctly  |
 | `setup`    | Install hooks for AI runtimes              | sets up for you, because she doesn't want to have to call the manager already |
+| `run`      | Host a runtime in a terminal she owns (`karen run claude`), so a command can be typed into it | holds the terminal, and hands it back |
 
 ### Global Options
 
@@ -122,6 +123,8 @@ She offers you choices. All of them are technically yours. The Karen who believe
 | 2    | usage / invalid input            | doesn't guess                 |
 | 3    | file not found                   | checks first                  |
 | 78   | invalid or missing policies      | insists on order              |
+
+`karen run` is the exception: it exits with the hosted runtime's own code, and uses 127 (runtime not on `PATH`) and 70 (anything else) for her own failures.
 
 ---
 
@@ -356,7 +359,9 @@ Every attempt ends as exactly one status, rides the verdict (`karen evaluate --j
 
 OpenCode has a layer today: its bridge types through the server's own API once the session is idle — `/compact` as `session.summarize` (the TUI's own call, so no TUI is needed), a custom command as `session.command`, `/new` and `/share` through `tui.executeCommand` — and files what became of each in the same log. Claude Code and Codex have none yet.
 
-Which layer each runtime gets, and the whole status list: [`docs/runtime-control.md`](docs/runtime-control.md).
+Claude Code and Codex can only be reached through their terminal, so `karen run claude` (or `codex`, or any program on `PATH`) hosts the runtime in a pseudo-terminal Karen owns and serves a local control endpoint that the runtime's hooks find through the `KAREN_HOST_*` variables it inherits. That is the host; the layer that waits for an idle session and types is the next piece, so for now those two still log `undelivered:no-layer`. The host is the default-on cargo feature `host`; `--no-default-features` is the lean hook-and-gate build.
+
+Which layer each runtime gets, the host's endpoint and threat model, and the whole status list: [`docs/runtime-control.md`](docs/runtime-control.md).
 
 ### State (deny_once_then_warn)
 
@@ -623,7 +628,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-330 tests passing (47 unit, 20 integration, 263 e2e — zero ignored). The Karen
+360 tests passing (65 unit, 20 integration, 275 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
@@ -655,6 +660,7 @@ src/
 ├── lib.rs               # library exports — The Karen who exports
 ├── adapters/            # runtime adapters — The Karen who translates
 ├── engine/              # dispatcher, injector, maintenance — The Karen who runs it
+├── host/                # `karen run`: pty host, screen, control endpoint (feature `host`) — The Karen who holds the terminal
 ├── policy/              # loader, gate compiler, config — The Karen who loads
 ├── state/               # FileStore, MemoryStore, ReadOnlyStore — The Karen who remembers, and forgets on request
 └── types.rs             # shared types — The Karen who defines

@@ -81,6 +81,17 @@ enum Command {
     },
     /// Install karen hooks for AI runtimes. Global by default; use --project for project-level. The Karen who sets up for you, because she doesn't want to have to call the manager already.
     Setup(SetupArgs),
+    /// Host a runtime in a terminal Karen owns, so a command can be typed into it when the hook API can't. Everything after the runtime goes to the runtime. The Karen who holds the terminal, and hands it back at the end.
+    Run(RunArgs),
+}
+
+#[derive(Args)]
+struct RunArgs {
+    /// The runtime to host: `claude`, `codex`, `opencode`, or any command line program on PATH.
+    runtime: std::ffi::OsString,
+    /// Arguments for the runtime, passed through untouched.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<std::ffi::OsString>,
 }
 
 #[derive(Args)]
@@ -226,9 +237,41 @@ fn main() {
             EXIT_OK
         }
         Command::Setup(args) => run_setup(&args),
+        Command::Run(args) => run_host(args),
     };
 
     std::process::exit(code);
+}
+
+/// `karen run`: host the runtime and exit with its exit code. Her own failures are 127 (the
+/// runtime is not on PATH, as a shell would say) and 70 (anything else), both with a reason on
+/// stderr.
+#[cfg(feature = "host")]
+fn run_host(args: RunArgs) -> i32 {
+    let options = karen::host::RunOptions {
+        program: args.runtime,
+        args: args.args,
+    };
+    match karen::host::run(&options) {
+        Ok(code) => code,
+        Err(why @ karen::host::RunError::NotFound(_)) => {
+            eprintln!("karen run: {why}");
+            127
+        }
+        Err(why) => {
+            eprintln!("karen run: {why}");
+            70
+        }
+    }
+}
+
+/// The lean build has no terminal host, and says so rather than pretending.
+#[cfg(not(feature = "host"))]
+fn run_host(_args: RunArgs) -> i32 {
+    eprintln!(
+        "karen run: this build has no terminal host. Rebuild with the default `host` feature (not --no-default-features)."
+    );
+    70
 }
 
 fn init_logging() {

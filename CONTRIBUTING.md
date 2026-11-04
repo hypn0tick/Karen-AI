@@ -17,6 +17,7 @@ cargo build --release
 # Run the full quality suite (what CI runs)
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+cargo clippy --no-default-features --all-targets -- -D warnings   # the lean build, without the terminal host
 cargo test
 
 # Run the binary manually
@@ -91,7 +92,7 @@ The Karen who checks your boxes, then adds three more.
 
 - [ ] `cargo fmt --check` passes
 - [ ] `cargo clippy --all-targets -- -D warnings` passes (zero warnings)
-- [ ] `cargo test` passes (all 330 tests: 47 unit + 20 integration + 263 e2e, zero ignored)
+- [ ] `cargo test` passes (all 360 tests: 65 unit + 20 integration + 275 e2e, zero ignored)
 - [ ] New code has doc comments with Karen voice
 - [ ] Commit messages follow conventions (no AI attribution)
 - [ ] Comments use backticks for code identifiers
@@ -108,6 +109,7 @@ src/
 ├── lib.rs               # Library exports
 ├── adapters/            # Runtime protocol translation
 ├── engine/              # Dispatcher, injector, facts, runtime commands, logs, maintenance
+├── host/                # `karen run`: pty host, screen, control endpoint (feature `host`, on by default)
 ├── policy/              # Loader, gate compiler, config
 ├── state/               # FileStore, MemoryStore, ReadOnlyStore
 └── types.rs             # Shared types (Event, Action, Injection, etc.)
@@ -135,7 +137,7 @@ cargo test --test integration
 cargo test karen_verifies_deny_protocol_shape
 ```
 
-All 330 tests must pass (47 unit + 20 integration + 263 e2e — zero ignored). The Karen who counts, then counts again.
+All 360 tests must pass (65 unit + 20 integration + 275 e2e — zero ignored). The Karen who counts, then counts again.
 
 ---
 

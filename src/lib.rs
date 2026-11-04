@@ -6,6 +6,8 @@
 pub mod adapters;
 pub mod engine;
 pub mod home;
+#[cfg(feature = "host")]
+pub mod host;
 pub mod policy;
 pub mod state;
 pub mod types;

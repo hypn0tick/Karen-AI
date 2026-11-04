@@ -99,6 +99,54 @@ The calls are not awaited: a compaction or a custom prompt runs for as long as i
 
 **An older bridge.** A bridge installed before the layer existed offers nothing, so a command for its session is `undelivered:no-layer` rather than a hand-off nothing would pick up. Re-run `karen setup opencode`.
 
+## `karen run`: the terminal host
+
+Claude Code and Codex cannot be handed a slash command by a hook, so a command reaches them the way yours does: typed into their terminal. `karen run <runtime> [args...]` starts the runtime in a pseudo-terminal Karen owns (ConPTY on Windows, a pty elsewhere), draws a copy of its screen, and serves a small local endpoint that the runtime's own hook processes can find.
+
+```
+karen run claude --resume
+karen run codex
+karen run opencode
+```
+
+Everything after the runtime goes to the runtime untouched. `<runtime>` is any program on `PATH` (on Windows a `.cmd` shim is started through `cmd.exe`); `claude`, `codex` and `opencode` are just the ones she expects. She exits with the runtime's own exit code. Her own failures are `127` (not on `PATH`, as a shell says it) and `70` (anything else), with the reason on stderr and nothing on stdout, because stdout belongs to the runtime.
+
+**What the hosted runtime inherits.** Four variables, so any process under it (its hooks, its shells) can find the host:
+
+| Variable | Holds |
+|----------|-------|
+| `KAREN_HOST_ENDPOINT` | the endpoint's name: a named pipe on Windows, a socket path on Unix |
+| `KAREN_HOST_TOKEN` | the password for it, new for every `karen run` |
+| `KAREN_HOST_RUNTIME` | the runtime's name (the program's file stem, lowercased) |
+| `KAREN_HOST_PID` | the pid of the `karen run` process |
+
+**The endpoint.** One connection is one exchange: the token on a line, one JSON request on the next, one JSON answer back. Three requests exist:
+
+| Request | Answer |
+|---------|--------|
+| `{"op":"status"}` | the runtime, both pids, the terminal size, and how many milliseconds since the runtime last drew anything |
+| `{"op":"screen"}` | the visible screen as plain text, the size, the cursor and whether the runtime is on the alternate screen |
+| `{"op":"type","text":"/compact"}` | the line typed, then Enter, now |
+
+`type` accepts one printable line: no control character, no line break, at most 1000 characters. An escape sequence is a keystroke she was not asked to make, and in testing a cooked-mode terminal ate an injected cursor-up. The Enter follows the text after a short pause (150 ms), because a TUI that treats a burst of input as a paste would otherwise take the Enter for part of the paste and never submit. That pause is a guess about how those TUIs behave, and it is not verified against a real Claude Code or Codex; the tests type into the fake runtime only.
+
+`type` types whatever the runtime is doing. Waiting for the session to be idle is the delivery layer's job, not the endpoint's. Screen text is the host's data: it is never logged and never rendered into a gate's text.
+
+**What the token is, and is not.** It keeps strangers off the endpoint: anything that is not a descendant of the hosted runtime does not know it, and the socket sits in a directory only its owner can enter (a Windows pipe's default access lets other users read from it but not write to it, and she does not lean on that). It is not a boundary against the hosted tree itself. The runtime and everything it starts share its terminal, and on Windows any of them can write to the console's input without Karen at all. So the rules that matter are the ones upstream of the endpoint: `runtime_command` is user-layer only, allowlisted, and one printable line, and the endpoint enforces the line rule again on its own. A host does not read the owner's allowlist, and she does not pretend otherwise.
+
+**What is promised about bytes.** Input is promised byte-exact: what the real terminal sends goes to the runtime as it arrived. Output is not. Under ConPTY the runtime's output is ConPTY's repaint of its screen (line clears, mode toggles, a window title), and she forwards it as produced and draws it on her own copy. Some of that, `?9001h` (win32-input-mode) among it, changes what a terminal sends back; forwarding it is the correct thing for ConPTY to ask, and interactive passthrough is not yet checked by hand in Windows Terminal or conhost. Piped input is what the tests cover.
+
+**Platform notes.**
+
+- ConPTY asks for the cursor position before it starts the child, and starts nothing until it is answered. She answers at once, and again from the screen's cursor whenever it asks. Without both the child never starts, which the banner test pins down.
+- Raw mode: while she hosts, the real terminal is put in raw mode (Windows: virtual-terminal input only, and virtual-terminal processing on the output) and put back when she leaves, including after a panic and on Ctrl-Break or a closing console. A hard kill (`taskkill /f`, `kill -9`) runs neither, and leaves the terminal raw: `reset` on Unix, or a new console on Windows, fixes it. When stdin is not a terminal, as in a pipe or a test, nothing is changed.
+- The console code is the only `unsafe` in the crate (Windows, a handful of `SetConsoleMode`-family calls, each with its `SAFETY` comment). The Unix side is safe Rust.
+- It follows the real terminal's size by looking every quarter second, not by signal.
+
+**The lean build.** `karen run` and everything behind it is the default-on cargo feature `host`. `cargo build --no-default-features` leaves hooks, gates and the rest, and about two dozen fewer crates on Windows; there, `karen run` says so and exits `70`.
+
+No gate reaches the terminal host yet. The delivery layer that waits for an idle session, queues what arrives mid-turn and files `handed-off` or `undelivered:timeout` is the next piece, and until it exists a `runtime_command` for Claude Code or Codex still ends `undelivered:no-layer`.
+
 ## How this is tested
 
-The attempts are tested end to end against the real binary: a user layer and a project layer in a temporary home, a hook payload in, the log and the verdict out. Nothing here types into a live session. The OpenCode bridge is tested by running the real plugin under `node` against a mock client that records every call it is asked to make, so the tests prove which call is made and when, and never that OpenCode honors it. Any layer that types into a terminal is tested against a fake runtime and recorded screens, never a real agent.
+The attempts are tested end to end against the real binary: a user layer and a project layer in a temporary home, a hook payload in, the log and the verdict out. Nothing here types into a live session. The OpenCode bridge is tested by running the real plugin under `node` against a mock client that records every call it is asked to make, so the tests prove which call is made and when, and never that OpenCode honors it. The terminal host is tested by starting the real `karen` binary on `examples/fake-runtime`, a small program that paints a banner and a prompt, takes a line, is busy for a moment and answers (it logs every line it receives, every argument and every `KAREN_HOST_*` variable, which is how the tests know exactly what reached it). The tests run on Windows (ConPTY) and on Linux (a pty, under WSL); the macOS arm is the Unix arm and has not been run. Any layer that types into a terminal is tested against the fake runtime and recorded screens, never a real agent.

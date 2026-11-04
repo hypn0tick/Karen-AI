@@ -13,6 +13,10 @@ mod examples_pack;
 mod facts;
 #[cfg(test)]
 mod hook;
+#[cfg(all(test, feature = "host"))]
+mod host;
+#[cfg(all(test, not(feature = "host")))]
+mod host_lean;
 #[cfg(test)]
 mod policy;
 #[cfg(test)]
