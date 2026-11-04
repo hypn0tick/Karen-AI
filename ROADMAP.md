@@ -24,6 +24,19 @@ Karen enforces policy on whatever runtime you run; she does not need a particula
 
 *She would like it recorded that she was never dependent on anyone. The file records that she is about to be.*
 
+## Priority — One verdict per call (no double hooks)
+
+A runtime hooked at both scopes (global and `--project` in the same checkout) runs Karen twice on every call, and twice is not "extra careful": it is wrong. A deny-once gate's second run finds the hold its first run just set and lets the call through, so the refusal never reaches the agent; every injection lands twice; the ledger counts every call twice; every tool call pays the hook latency twice.
+
+- **Scope:** three layers, each covering what the one before it can miss.
+  - **Install:** `karen setup <runtime>` detects Karen already installed at the other scope for the same runtime. A global install removes or disables the project copies it can find and names any it cannot reach; a `--project` install inside a checkout the global hooks already cover refuses unless asked to replace them.
+  - **Check:** `karen validate` and `karen doctor` report a runtime hooked at both scopes, so a hand-made or older install is named, not discovered by a mysterious double refusal.
+  - **Run time:** every hook run derives a call key from the session, the event and the runtime's own call id (Claude Code `tool_use_id`, OpenCode `callID`, the Codex equivalent; a payload hash in a short window for events with no id). A second run with a key already seen returns the first run's verdict and injects nothing. This is the layer that keeps the guarantee when the other two miss.
+- **Origin:** the owner moved OpenCode to a global install (2026-11-04) while a FORGE checkout still carried `.opencode/plugins/karen-ai.js`. Nothing had doubled yet; the next `karen setup opencode` would have done it.
+- **Status:** priority, before the global OpenCode setup is relied on in a checkout that still carries a project plugin.
+
+*She has always insisted on hearing things once. She would like it noted that she said this once.*
+
 ## Runtime monkey-patch generator
 
 Extend runtimes past whatever their own developers felt like expending the effort to allow. **Status:** audited design direction. The dependencies are cited — not by her. She doesn't do research; she's why research gets done.
