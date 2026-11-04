@@ -1,0 +1,41 @@
+// Example 14 — a nudge that waits for the window to fill. Teaches: the
+// occupancy facts (`facts.context_ratio`, the latest turn's tokens over the
+// window it runs in), `field_gte`, and `reset_on_compact`. At 85% she holds
+// the prompt once and says why; the retry goes through; and a compaction
+// wipes the slate, because a nudge the compaction made true again deserves
+// to be heard again. The Karen who tells you the room is nearly full before
+// you pour another drink.
+//
+// Where the numbers come from, so you know when she goes quiet: Claude Code
+// from the tail of the transcript, with the window from `config.toml`'s
+// `[facts.context_window]`; Codex from its rollout, window included;
+// OpenCode from the plugin's own payload. When either number is unknown the
+// ratio is absent, and absence is never a match. She does not guess a window.
+{
+  "id": "nudge-before-the-window-fills",
+  "name": "Compact before the window fills",
+  "description": "Hold the prompt once when the context window passes 85%, and again after each compaction that has refilled it.",
+  "event": "UserPromptSubmit",
+  "priority": 50,
+  "enabled": true,
+  "tags": ["facts", "context", "teaching-gate"],
+
+  "match": {
+    "all": [
+      { "type": "field_gte", "field": "facts.context_ratio", "value": 0.85 }
+    ]
+  },
+
+  "action": {
+    "type": "deny_once_then_warn",
+    "first_reason": "The window is over 85% full. Run /compact now, before the next turn does it for you mid-thought.",
+    "second_reason": "Allowing this one, but the window was over 85% full when you sent it."
+  },
+
+  "state": {
+    "key": "nudged-compaction",
+    // reset_on_compact — a compaction forgets this key's strikes, so the
+    // nudge is "once per context", not "once per session".
+    "reset_on_compact": true
+  }
+}

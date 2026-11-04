@@ -1,0 +1,42 @@
+// Example 15 — a latch: fire once per filling. Teaches: a state spec with
+// `field` and `rearm_below`, which turns any action into "once, then quiet
+// until the field falls back". At 40% occupancy she holds the stop until the
+// agent has compressed the work the session finished; she does not hold it
+// again while the window stays above 30%, and she holds it once more after
+// the window has fallen below 30% and climbed back over 40%.
+//
+// The re-arm is checked on every call, matched or not: a gate that fires at
+// 40% can never match below 30%, so a latch that waited for its own match to
+// clear would stay shut for good.
+//
+// A plain `deny` on a Stop needs a `stop_hook_active` exemption or it holds
+// every retry of the same turn. This one does not: the latch holds the stop
+// once, and the retry finds the key armed and passes.
+{
+  "id": "compress-finished-work",
+  "name": "Compress finished work before stopping",
+  "description": "Hold the stop once when the window passes 40%, until the agent compresses the finished work; re-arm when the window falls below 30%.",
+  "event": "Stop",
+  "priority": 50,
+  "enabled": true,
+  "tags": ["facts", "context", "latch"],
+
+  "match": {
+    "all": [
+      { "type": "field_gte", "field": "facts.context_ratio", "value": 0.4 }
+    ]
+  },
+
+  "action": {
+    "type": "deny",
+    "reason": "The window is over 40% full. Call your runtime's compress tool on the work this session finished, keeping the open items and the shas, then try this stop again."
+  },
+
+  "state": {
+    "key": "latch:compress",
+    // field + rearm_below — the latch. The fact is collected the same way a
+    // field_* condition's is; the key re-arms when it reads below the line.
+    "field": "facts.context_ratio",
+    "rearm_below": 0.3
+  }
+}

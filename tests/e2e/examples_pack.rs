@@ -40,11 +40,11 @@ fn examples_env() -> TestEnv {
             copied += 1;
         }
     }
-    // The pack ships sixteen files — thirteen fundamentals (one holding
-    // two gates) and three advanced merges (holding two, two, and
-    // three). If this number changes, she wants to know about it here
+    // The pack ships eighteen files — thirteen fundamentals (one holding
+    // two gates), three advanced merges (holding two, two, and three) and
+    // the session-aware gates. If this number changes, she wants to know about it here
     // first — she counts, then counts again.
-    assert_eq!(copied, 16, "expected all sixteen example gate files");
+    assert_eq!(copied, 18, "expected all eighteen example gate files");
 
     std::fs::copy(
         examples_root.join("rule-00-briefing.md"),
@@ -122,7 +122,7 @@ fn post_tool_write(session: &str, content: &str) -> String {
 
 #[test]
 fn karen_examples_pack_validates_exactly_as_shipped() {
-    // The whole pack, compiled and counted: twenty-one gates across sixteen
+    // The whole pack, compiled and counted: twenty-three gates across eighteen
     // files, one delivered rule. She grades the curriculum before she
     // teaches it. When the pack grows, update the count here — the
     // count is a feature, not a chore.
@@ -137,8 +137,8 @@ fn karen_examples_pack_validates_exactly_as_shipped() {
         .filter(|g| g["layer"] == "project")
         .count();
     assert_eq!(
-        shipped, 21,
-        "the pack ships exactly twenty-one gates — she counted twice"
+        shipped, 23,
+        "the pack ships exactly twenty-three gates — she counted twice"
     );
     assert_eq!(
         data["rule_count"].as_u64(),
@@ -201,6 +201,73 @@ fn karen_examples_kill_is_held_once_and_the_identical_retry_passes() {
         serde_json::json!({ "description": "end zede" }),
     );
     assert_hook_deny_once_first(&other, Some("Confirm the name"));
+}
+
+/// A payload carrying the occupancy the way the `OpenCode` bridge sends it:
+/// tokens in a 1000-token window, so `tokens` over 1000 is the ratio.
+fn occupied(event: &str, session: &str, tokens: u64) -> String {
+    let mut payload = serde_json::json!({
+        "hook_event_name": event,
+        "session_id": session,
+        "facts": { "context_tokens": tokens, "context_window": 1000 },
+    });
+    if event == "UserPromptSubmit" {
+        payload["prompt"] = serde_json::json!("carry on");
+    }
+    payload.to_string()
+}
+
+#[test]
+fn karen_examples_nudge_waits_for_the_window_and_speaks_again_after_a_compaction() {
+    // 90% full is held once; the retry passes; half full passes untouched;
+    // a compaction wipes the slate and the nudge is heard again.
+    let env = examples_env();
+    let ask = |tokens| {
+        let (code, stdout, _) = env.run_hook(
+            &occupied("UserPromptSubmit", "ex-nudge", tokens),
+            &["--runtime", "opencode"],
+        );
+        assert_eq!(code, 0);
+        stdout
+    };
+    // Half full: the briefing is delivered with the first prompt, the nudge is not.
+    let quiet = ask(500);
+    assert!(!quiet.contains("compact"), "half full is quiet: {quiet}");
+    let first = ask(900);
+    assert!(first.contains("Run /compact now"), "held once: {first}");
+    let retry = ask(900);
+    assert!(
+        retry.contains("the window was over 85% full"),
+        "warned retry: {retry}"
+    );
+    let (code, _, _) = env.run_hook(
+        &occupied("PostCompact", "ex-nudge", 100),
+        &["--runtime", "opencode"],
+    );
+    assert_eq!(code, 0);
+    let again = ask(900);
+    assert!(again.contains("Run /compact now"), "held again: {again}");
+}
+
+#[test]
+fn karen_examples_compress_latch_fires_once_per_filling() {
+    // 45% holds the stop; the window staying full does not hold it again;
+    // falling under 30% re-arms the latch; the next filling holds once more.
+    let env = examples_env();
+    let stop = |tokens| {
+        let (code, stdout, _) = env.run_hook(
+            &occupied("Stop", "ex-latch", tokens),
+            &["--runtime", "opencode"],
+        );
+        assert_eq!(code, 0);
+        stdout
+    };
+    assert_hook_allow(&stop(200));
+    assert!(stop(450).contains("compress tool"), "first filling holds");
+    assert_hook_allow(&stop(500));
+    assert_hook_allow(&stop(350));
+    assert_hook_allow(&stop(200));
+    assert!(stop(450).contains("compress tool"), "re-armed, holds again");
 }
 
 #[test]
