@@ -574,6 +574,37 @@ fn git_uncommitted(cwd: Option<&str>) -> String {
 mod tests {
     use super::*;
 
+    fn occupancy(tokens: u64, window: u64) -> Map<String, Value> {
+        let mut facts = Map::new();
+        facts.insert("context_tokens".into(), Value::from(tokens));
+        facts.insert("context_window".into(), Value::from(window));
+        facts
+    }
+
+    #[test]
+    fn ratio_divides_tokens_by_the_window() {
+        assert_eq!(context_ratio(&occupancy(500, 1000)), Some(0.5));
+    }
+
+    #[test]
+    fn ratio_is_absent_over_a_zero_window() {
+        // Dividing by nothing gives infinity or NaN, and serde_json writes both
+        // as null, so only the function itself can tell a real ratio from noise:
+        // a window of zero is a window she does not know.
+        assert_eq!(context_ratio(&occupancy(500, 0)), None);
+        assert_eq!(context_ratio(&occupancy(0, 0)), None);
+    }
+
+    #[test]
+    fn ratio_is_absent_when_either_side_is() {
+        let mut facts = occupancy(500, 1000);
+        facts.remove("context_window");
+        assert_eq!(context_ratio(&facts), None);
+        let mut facts = occupancy(500, 1000);
+        facts.remove("context_tokens");
+        assert_eq!(context_ratio(&facts), None);
+    }
+
     #[test]
     fn tail_read_grows_its_window_until_the_line_fits() {
         // The Karen who reads backwards before she reads more: the line she

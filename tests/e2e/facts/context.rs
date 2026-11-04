@@ -3,7 +3,8 @@
 // the window is, and what she refuses to say when it says nothing.
 
 use crate::e2e::common::{
-    DEFAULT_CONFIG, GateFixture, TestEnv, assert_evaluate_action, assert_exit_code, assert_json_ok,
+    DEFAULT_CONFIG, GateFixture, TestEnv, assert_evaluate_action, assert_exit_code,
+    assert_hook_deny, assert_json_ok,
 };
 use serde_json::json;
 use serial_test::serial;
@@ -215,34 +216,47 @@ fn karen_leaves_the_ratio_absent_without_a_window() {
 
 #[test]
 #[serial]
-fn karen_reads_codex_occupancy_and_window_from_the_rollout() {
-    // The rollout's own `token_count` answers both: 100 + 200 + 300 tokens in
-    // a 258400-token window, and the configured window never overrides it.
+fn karen_reads_codex_occupancy_tokens_from_the_rollout() {
+    // The rollout's own `token_count` answers: 100 + 200 + 300 tokens. One gate
+    // in the env, so only the tokens can be what denies.
     let env = TestEnv::with_config(
         WINDOW_CONFIG,
-        &[
-            equals_gate(
-                "codex-tokens.json",
-                "codex-tokens",
-                "facts.context_tokens",
-                600,
-            ),
-            equals_gate(
-                "codex-window.json",
-                "codex-window",
-                "facts.context_window",
-                258_400,
-            ),
-        ],
+        &[equals_gate(
+            "codex-tokens.json",
+            "codex-tokens",
+            "facts.context_tokens",
+            600,
+        )],
         &[],
     );
     let rollout = env.temp_dir.path().join("rollout.jsonl");
     std::fs::write(&rollout, CODEX_ROLLOUT).expect("write rollout");
-    let input = codex_input(Some(&rollout));
-    let tokens = evaluate(&env, &input, "codex");
-    assert_evaluate_action(&tokens, "deny");
-    let window = evaluate(&env, &input, "codex");
-    assert_evaluate_action(&window, "deny");
+    let data = evaluate(&env, &codex_input(Some(&rollout)), "codex");
+    assert_evaluate_action(&data, "deny");
+}
+
+#[test]
+#[serial]
+fn karen_prefers_the_rollouts_codex_window_over_the_configured_one() {
+    // The rollout says 258400 and the config says 10000 for codex. The only
+    // gate in the env matches 258400 alone, so the verdict is deny only when
+    // the rollout wins: a configured-first order answers 10000 and allows.
+    let env = TestEnv::with_config(
+        WINDOW_CONFIG,
+        &[equals_gate(
+            "codex-window.json",
+            "codex-window",
+            "facts.context_window",
+            258_400,
+        )],
+        &[],
+    );
+    let rollout = env.temp_dir.path().join("rollout.jsonl");
+    std::fs::write(&rollout, CODEX_ROLLOUT).expect("write rollout");
+    // Through the hook, where the runtime's calls actually arrive.
+    let (code, stdout, _) = env.run_hook(&codex_input(Some(&rollout)), &["--runtime", "codex"]);
+    assert_exit_code(code, 0);
+    assert_hook_deny(&stdout, Some("occupancy matched"));
 }
 
 #[test]
@@ -308,4 +322,54 @@ fn karen_honors_a_runtime_supplied_occupancy_over_her_own_reading() {
     .to_string();
     let data = evaluate(&env, &input, "opencode");
     assert_evaluate_action(&data, "deny");
+}
+
+/// `claude = 0` configures a window of nothing: a number she must not divide by.
+const ZERO_WINDOW_CONFIG: &str = r#"# Personal Rules engine configuration.
+[engine]
+fail_open = true
+log_level = "warn"
+timeout_ms = 5000
+
+[policy]
+rules_dir = "rules"
+gates_dir = "gates"
+validate_on_load = true
+
+[state]
+backend = "memory"
+
+[facts.context_window]
+claude = 0
+"#;
+
+/// A gate any non-negative ratio would trip: the only thing that keeps it
+/// quiet is a ratio that is not there.
+const ANY_RATIO_GATE: &str = r#"{
+  "id": "any-ratio",
+  "description": "Matches whenever a context ratio exists at all.",
+  "event": "PreToolUse",
+  "match": { "all": [ { "type": "field_gte", "field": "facts.context_ratio", "value": 0 } ] },
+  "action": { "type": "deny", "reason": "a ratio exists" }
+}"#;
+
+#[test]
+#[serial]
+fn karen_leaves_the_ratio_absent_when_the_window_is_zero() {
+    // A configured window of zero is no window: no ratio, and a ratio gate
+    // stays quiet instead of firing on a number made of nothing. The division
+    // guard itself is pinned by a unit test, since a non-finite ratio would
+    // serialise as null and stay quiet here either way.
+    let env = TestEnv::with_config(
+        ZERO_WINDOW_CONFIG,
+        &[GateFixture {
+            file: "any-ratio.json",
+            content: ANY_RATIO_GATE,
+        }],
+        &[],
+    );
+    let transcript = env.temp_dir.path().join("transcript.jsonl");
+    std::fs::write(&transcript, CLAUDE_TRANSCRIPT).expect("write transcript");
+    let data = evaluate(&env, &claude_input(Some(&transcript)), "claude");
+    assert_evaluate_action(&data, "allow");
 }

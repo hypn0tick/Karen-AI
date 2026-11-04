@@ -525,7 +525,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-258 tests passing (35 unit, 20 integration, 203 e2e — zero ignored). The Karen
+263 tests passing (38 unit, 20 integration, 205 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
