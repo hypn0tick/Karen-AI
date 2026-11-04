@@ -651,22 +651,25 @@ pub fn event_name(event: &Event) -> String {
     }
 }
 
+/// Every event a gate may name: the one list `karen validate`, `karen schema`
+/// and the README's events table all answer to.
+pub const EVENT_NAMES: &[&str] = &[
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+    "Notification",
+    "ProviderError",
+];
+
 fn validate_event(event: &str) -> Result<(), ()> {
-    const KNOWN: &[&str] = &[
-        "SessionStart",
-        "SessionEnd",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PreCompact",
-        "PostCompact",
-        "SubagentStart",
-        "SubagentStop",
-        "Stop",
-        "Notification",
-        "ProviderError",
-    ];
-    if KNOWN.iter().any(|k| k.eq_ignore_ascii_case(event)) {
+    if EVENT_NAMES.iter().any(|k| k.eq_ignore_ascii_case(event)) {
         Ok(())
     } else {
         Err(())
@@ -676,5 +679,33 @@ fn validate_event(event: &str) -> Result<(), ()> {
 impl fmt::Display for Gate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} ({} @ {})", self.id, self.event, self.priority)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EVENT_NAMES;
+
+    /// The README's events table, as the event names in its first column.
+    fn documented_events() -> Vec<String> {
+        include_str!("../../README.md")
+            .lines()
+            .skip_while(|line| *line != "### Events")
+            .skip(1)
+            .take_while(|line| !line.starts_with("### "))
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|row| row.split('`').next())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn the_readmes_events_table_names_exactly_the_events_she_accepts() {
+        // A table that drifts from the code is a rumour with a border.
+        let mut documented = documented_events();
+        documented.sort();
+        let mut known: Vec<String> = EVENT_NAMES.iter().map(|name| (*name).to_string()).collect();
+        known.sort();
+        assert_eq!(documented, known);
     }
 }

@@ -1119,20 +1119,7 @@ fn output_params(mut params: Value) -> Value {
 }
 
 fn event_names() -> Value {
-    json!([
-        "SessionStart",
-        "SessionEnd",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PreCompact",
-        "PostCompact",
-        "SubagentStart",
-        "SubagentStop",
-        "Stop",
-        "Notification",
-        "ProviderError",
-    ])
+    json!(karen::policy::gate::EVENT_NAMES)
 }
 
 #[allow(dead_code)]

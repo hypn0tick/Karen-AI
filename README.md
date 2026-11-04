@@ -192,6 +192,27 @@ If an explicitly named project root does not exist, or a file in a layer does no
 
 The Karen who decides. Four answers: `allow`, `deny`, `ask`, `modify`. No `maybe`. A `maybe` was proposed at a design review. She asked for the manager. It did not survive. The Karen who buried `maybe` in the backyard. The manager attended the funeral.
 
+### Events
+
+A gate names the one event it is for (`"event": "PreToolUse"`); a name she does not know is refused by `karen validate`. Which runtime delivers which event is the runtime's doing, not hers: a gate on an event a runtime never sends is a gate that never runs there.
+
+| Event | Fires when | A gate can read | Delivered by |
+|-------|------------|-----------------|--------------|
+| `SessionStart` | a session begins or resumes; also how the rules reach it, in parts | `source` | Claude Code, Codex, OpenCode |
+| `SessionEnd` | a session closes | the payload's own fields | Claude Code |
+| `UserPromptSubmit` | the user sends a prompt, before the agent sees it | `prompt_regex` | Claude Code, Codex |
+| `PreToolUse` | the agent is about to call a tool | `command_*`, `file_regex`, `content_regex`, `tool_input.*` | Claude Code, Codex, OpenCode |
+| `PostToolUse` | a tool call has finished | the same, plus `tool_response.*` | Claude Code, Codex, OpenCode |
+| `PreCompact` | the runtime is about to compact the context | the payload's own fields | Claude Code, Codex |
+| `PostCompact` | a compaction finished; wipes the strikes of every `reset_on_compact` key | the payload's own fields | Claude Code, Codex |
+| `SubagentStart` | a subagent starts | the payload's own fields | Claude Code, Codex |
+| `SubagentStop` | a subagent stops | `last_assistant_message`, `stop_hook_active` | Claude Code, Codex, OpenCode (a child session's stop) |
+| `Stop` | the agent is about to end its turn | `last_assistant_message`, `stop_hook_active`, `background_tasks` | Claude Code, Codex, OpenCode |
+| `Notification` | the runtime raises a notice | the payload's own fields | accepted, but no generated config subscribes to it |
+| `ProviderError` | the provider call itself failed: the timeout, the 529, the overload | `facts.provider_error.*` | OpenCode's plugin; Claude Code and Codex are read at `Stop` instead (see [Provider errors](#provider-errors)) |
+
+"The payload's own fields" are the top-level keys the runtime sent, read with `field_equals` and friends (`tool_input` first, then the payload, `.` for nested keys). The `facts.*` of [Environment facts](#environment-facts) are readable on every event, collected only when a gate that applies names one.
+
 ### Matchers
 
 | Type                | Description                          | The Karen Who...     |
@@ -230,7 +251,29 @@ A gate can read what the session's runtime actually has instead of someone remem
 
 `runtime`, `mcp_servers` and `tools` are cached for the session; `git_uncommitted` and the occupancy facts are read fresh on every call that needs them. An unreadable fact is absent, never zero: a closed Codex rollout is zstd and she does not decompress it, a missing transcript says nothing, and a gate matching a numeric condition on an absent fact stays quiet. The same goes for a transcript whose last usage line sits more than 8 MiB from the end: she stops reading there, the occupancy facts are absent, and a gate on them stays quiet on that transcript rather than guessing from an older line.
 
-The env allowlist is the user layer's and no other's: a project layer that sets `[facts] env` is ignored, because a merge that unions the lists would let repository content expose a variable the user never named — `karen validate` names the layer that tried. A gate matching `facts.env.<NAME>` off the allowlist can never fire; `karen validate` names that gate too. A payload's own `facts.env` never reaches a gate, an unset variable reads as absent (never the empty string), and a value is never logged or written to state — it exists only in the request the gate reads. The ratio is what a gate names when it means "how full the window is":
+The env allowlist is the user layer's and no other's: a project layer that sets `[facts] env` is ignored, because a merge that unions the lists would let repository content expose a variable the user never named — `karen validate` names the layer that tried. A gate matching `facts.env.<NAME>` off the allowlist can never fire; `karen validate` names that gate too. A payload's own `facts.env` never reaches a gate, an unset variable reads as absent (never the empty string), and a value is never logged or written to state — it exists only in the request the gate reads.
+
+A gate can also ask which session it is judging. Start each agent with a variable that names it (`HCOM_INSTANCE=luna`), allowlist the variable's name in your own `~/.karen/policies/config.toml`, and a gate matches on `facts.env.HCOM_INSTANCE` — here, a fleet of lanes that may not `git push` except the one orchestrator:
+
+```json
+{
+  "id": "lanes-do-not-push",
+  "event": "PreToolUse",
+  "tool": "Bash",
+  "match": {
+    "all": [
+      { "type": "command_regex", "pattern": "\\bgit\\s+push\\b" },
+      { "type": "field_regex", "field": "facts.env.HCOM_INSTANCE", "pattern": "." }
+    ],
+    "none": [ { "type": "field_equals", "field": "facts.env.HCOM_INSTANCE", "value": "orchestrator" } ]
+  },
+  "action": { "type": "deny", "reason": "Lanes do not push. Commit on your branch and tell the orchestrator; it pushes." }
+}
+```
+
+An unset variable is absent, so a session that is no lane is never matched. Env facts match; they do not render, so a reason that templates `{facts.env.NAME}` keeps the placeholder as written. The shipped version is [`examples/gates/lanes-do-not-push.json`](examples/gates/lanes-do-not-push.json).
+
+The ratio is what a gate names when it means "how full the window is":
 
 ```json
 {
@@ -544,7 +587,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-279 tests passing (38 unit, 20 integration, 221 e2e — zero ignored). The Karen
+280 tests passing (39 unit, 20 integration, 221 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

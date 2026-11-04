@@ -11,6 +11,10 @@
 // `[facts.context_window]`; Codex from its rollout, window included;
 // OpenCode from the plugin's own payload. When either number is unknown the
 // ratio is absent, and absence is never a match. She does not guess a window.
+//
+// The event is the other limit: it runs where the runtime delivers a
+// UserPromptSubmit (Claude Code and Codex). OpenCode's plugin does not send
+// one, so there the same idea belongs on an event it does send.
 {
   "id": "nudge-before-the-window-fills",
   "name": "Compact before the window fills",
