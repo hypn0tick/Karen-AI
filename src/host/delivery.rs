@@ -245,6 +245,7 @@ mod tests {
             runtime: "fake-runtime".into(),
             command: command.into(),
             arguments: Some("{gate}".into()),
+            sent_at_ms: None,
         }
     }
 

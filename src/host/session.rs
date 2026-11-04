@@ -136,6 +136,9 @@ impl Host {
         if let Some(refusal) = Self::refusal(text) {
             return refusal;
         }
+        if endpoint::arrived_late(meta.sent_at_ms, endpoint::now_ms()) {
+            return Response::refused("arrived after the hook stopped waiting; not typed");
+        }
         match self.queue.push(text.to_string(), meta.clone()) {
             Some(place) => Response {
                 queued: Some(place),

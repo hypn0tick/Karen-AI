@@ -46,7 +46,7 @@ An entry in `runtime_commands` that is not one word beginning with `/`, or an en
 | `undelivered:unsafe-text` | The command or the rendered arguments hold a control character, or the whole line runs past 1000 characters. |
 | `undelivered:no-layer` | Allowed, and nothing reaches this session: no layer exists for its runtime, or the caller did not offer the one that does. |
 | `undelivered:host-unreachable` | The session's environment names a terminal host (`karen run`) for its runtime, and it did not answer in three seconds, or could not be reached. The `layer` field names the one that was tried. |
-| `undelivered:host-refused` | The host answered, and would not take the line: its queue was full, or it was not a line it will type. |
+| `undelivered:host-refused` | The host answered, and would not take the line: its queue was full, it was not a line it will type, or it arrived more than two seconds after the hook sent it. |
 | `handed-off` | Allowed, and a layer took it. The `layer` field names it. The layer delivers after her process has exited, so this is the last thing she can know. |
 
 `refused` means a rule of hers stopped it. `undelivered` means it was allowed and did not arrive. `handed-off` means a layer has it, and the layer files the rest: the OpenCode bridge writes `sent`, `sent-unconfirmed` and its own `undelivered:*` statuses (below), and the terminal host writes `sent`, `undelivered:timeout` (no idle moment came in time), `undelivered:host-exited` (the runtime ended with the line still waiting) and `undelivered:type-failed` (the terminal would not take it). Every one leaves a log line, and none is ever silent.
@@ -169,6 +169,8 @@ A dim suggestion sitting in an otherwise empty prompt reads as typed text for Cl
 | `timeout_secs` | 120 | 1 to 3600 | How long a line waits for an idle session. |
 
 A value outside its range is named by `karen validate` and the default stands.
+
+**One verdict per attempt.** The hook waits three seconds for the host's answer and then files `undelivered:host-unreachable`. Each request carries the time the hook sent it, and the host refuses a line that reaches it more than two seconds later, so a line the hook stopped waiting for is never typed afterwards and the ledger and the terminal cannot disagree. Each exchange on the endpoint also has a five-second deadline for every read and write, so a client that connects and says nothing frees its place instead of holding one of the eight for good.
 
 **What the token is, and is not.** It keeps strangers off the endpoint: anything that is not a descendant of the hosted runtime does not know it, and the socket sits in a directory only its owner can enter (a Windows pipe's default access lets other users read from it but not write to it, and she does not lean on that). It is not a boundary against the hosted tree itself. The runtime and everything it starts share its terminal, and on Windows any of them can write to the console's input without Karen at all. So the rules that matter are the ones upstream of the endpoint: `runtime_command` is user-layer only, allowlisted, and one printable line, and the endpoint enforces the line rule again on its own. A host does not read the owner's allowlist, and she does not pretend otherwise.
 

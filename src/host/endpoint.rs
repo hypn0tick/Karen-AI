@@ -77,6 +77,10 @@ pub struct DeliveryMeta {
     /// The arguments as the gate wrote them, placeholders unexpanded; never the rendering.
     #[serde(default)]
     pub arguments: Option<String>,
+    /// When the hook sent the request (milliseconds since the Unix epoch); the host refuses a line
+    /// that arrives after the hook stopped waiting ([`DELIVERY_ACCEPT_WINDOW`]).
+    #[serde(default)]
+    pub sent_at_ms: Option<u64>,
 }
 
 /// What the host reports about itself.
@@ -250,6 +254,10 @@ pub fn serve(
                 live.fetch_sub(1, Ordering::SeqCst);
                 continue;
             }
+            // A client that connects and then says nothing would hold a slot forever, and eight of them
+            // would leave the host deaf to its own hooks: every exchange gets a deadline.
+            let _ = stream.set_recv_timeout(Some(EXCHANGE_TIMEOUT));
+            let _ = stream.set_send_timeout(Some(EXCHANGE_TIMEOUT));
             let (token, handler, live) = (token.clone(), Arc::clone(&handler), Arc::clone(&live));
             std::thread::spawn(move || {
                 let _ = exchange(stream, &token, handler.as_ref());
@@ -257,6 +265,31 @@ pub fn serve(
             });
         }
     });
+}
+
+/// How long one exchange may wait on its client for each read or write.
+const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How old a delivery may be when the host reads it. The hook stops waiting for an answer after
+/// three seconds and files `undelivered:host-unreachable`; a line it gave up on must not be typed
+/// afterwards, so the host refuses anything sent more than two seconds before it arrives.
+pub const DELIVERY_ACCEPT_WINDOW: Duration = Duration::from_secs(2);
+
+/// Milliseconds since the Unix epoch, the clock both ends of a delivery read.
+#[must_use]
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Whether a delivery sent at `sent_at_ms` arrives too late to type at `now_ms`.
+#[must_use]
+pub fn arrived_late(sent_at_ms: Option<u64>, now_ms: u64) -> bool {
+    sent_at_ms.is_some_and(|sent| {
+        now_ms.saturating_sub(sent)
+            > u64::try_from(DELIVERY_ACCEPT_WINDOW.as_millis()).unwrap_or(u64::MAX)
+    })
 }
 
 /// Read a line of at most `limit` bytes, without its newline.
@@ -385,6 +418,29 @@ mod tests {
         assert_eq!(first.token.len(), 32);
         first.close();
         second.close();
+    }
+
+    #[test]
+    fn a_delivery_older_than_the_accept_window_arrived_late() {
+        let window = u64::try_from(DELIVERY_ACCEPT_WINDOW.as_millis()).unwrap();
+        assert!(
+            !arrived_late(None, 10_000),
+            "an unstamped request is judged by its contents alone"
+        );
+        assert!(!arrived_late(Some(10_000), 10_000));
+        assert!(
+            !arrived_late(Some(10_000), 10_000 + window),
+            "the window's edge is still in time"
+        );
+        assert!(arrived_late(Some(10_000), 10_000 + window + 1));
+        assert!(
+            !arrived_late(Some(20_000), 10_000),
+            "a clock that runs backwards is not late"
+        );
+        assert!(
+            window < 3_000,
+            "the host gives up before the hook does (it files host-unreachable after three seconds)"
+        );
     }
 
     #[test]

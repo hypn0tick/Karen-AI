@@ -301,7 +301,19 @@ fn karen_hands_the_host_the_rendered_line_and_the_unrendered_template() {
 
     hook_with(&env, &vars, &["--runtime", "claude"]);
 
-    let seen = recorder.requests.lock().unwrap().clone();
+    let mut seen = recorder.requests.lock().unwrap().clone();
+    // The hook stamps when it sent the line, so the host can refuse one that arrives after the hook
+    // stopped waiting; check the stamp is a recent time, then compare the rest.
+    for request in &mut seen {
+        if let Request::Deliver { meta, .. } = request {
+            let sent = meta
+                .sent_at_ms
+                .take()
+                .expect("the hook stamps when it sent the line");
+            let age = karen::host::endpoint::now_ms().saturating_sub(sent);
+            assert!(age < 60_000, "the stamp is the send time, {age} ms ago");
+        }
+    }
     assert_eq!(
         seen,
         [Request::Deliver {
@@ -312,6 +324,7 @@ fn karen_hands_the_host_the_rendered_line_and_the_unrendered_template() {
                 runtime: "claude".into(),
                 command: "/compact".into(),
                 arguments: Some("for {facts.session_id}".into()),
+                sent_at_ms: None,
             },
         }],
         "the host is told the line, and the template for its ledger"

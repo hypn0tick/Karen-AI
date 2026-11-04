@@ -82,6 +82,15 @@ pub fn is_typeable(text: &str) -> bool {
     text.chars().count() <= MAX_LINE && !text.chars().any(char::is_control)
 }
 
+/// The length in characters of the line the host types: `command`, then one space and the
+/// arguments when there are any (the joining rule of the line [`decide`] builds).
+fn typed_line_chars(command: &str, rendered: Option<&str>) -> usize {
+    command.chars().count()
+        + rendered
+            .filter(|a| !a.is_empty())
+            .map_or(0, |a| 1 + a.chars().count())
+}
+
 /// Whether `text` is a command she may be given: `/` and a name, one word,
 /// typeable. The arguments are the gate's, never part of the command.
 #[must_use]
@@ -192,6 +201,7 @@ pub fn attempt(
                 runtime: runtime.clone(),
                 command: command.to_string(),
                 arguments: arguments.map(str::to_string),
+                sent_at_ms: Some(crate::host::endpoint::now_ms()),
             };
             decision.status = hand_to_host(target, line, meta);
         }
@@ -264,7 +274,7 @@ fn decide(
     }
     let rendered = arguments
         .map(|template| dispatcher::expand_facts(&template.replace("{gate}", &gate.id), req));
-    let line_chars = command.chars().count() + rendered.as_deref().map_or(0, |a| a.chars().count());
+    let line_chars = typed_line_chars(command, rendered.as_deref());
     if !is_command(command) || !rendered.as_deref().is_none_or(is_typeable) || line_chars > MAX_LINE
     {
         return Decision::stop(status::UNSAFE_TEXT);
@@ -332,6 +342,25 @@ mod tests {
         assert!(!is_typeable("tab\there"));
         assert!(is_typeable(&"x".repeat(MAX_LINE)));
         assert!(!is_typeable(&"x".repeat(MAX_LINE + 1)));
+    }
+
+    #[test]
+    fn the_line_length_counts_the_space_that_joins_the_arguments() {
+        assert_eq!(typed_line_chars("/compact", None), 8);
+        assert_eq!(
+            typed_line_chars("/compact", Some("")),
+            8,
+            "no arguments, no space"
+        );
+        assert_eq!(typed_line_chars("/compact", Some("now")), 12);
+        // At the boundary the joined line, not the two parts, decides: 8 + 1 + 991 = 1000 is typeable,
+        // one more character is not, exactly as the host's own check judges the joined line.
+        let at_limit = "x".repeat(MAX_LINE - 9);
+        assert_eq!(typed_line_chars("/compact", Some(&at_limit)), MAX_LINE);
+        assert!(is_typeable(&format!("/compact {at_limit}")));
+        let over = "x".repeat(MAX_LINE - 8);
+        assert_eq!(typed_line_chars("/compact", Some(&over)), MAX_LINE + 1);
+        assert!(!is_typeable(&format!("/compact {over}")));
     }
 
     #[test]

@@ -244,6 +244,7 @@ impl Session {
                 runtime: runtime.into(),
                 command: text.into(),
                 arguments: None,
+                sent_at_ms: Some(endpoint::now_ms()),
             },
         };
         let answer = endpoint::call(&self.target.0, &self.target.1, &request)
