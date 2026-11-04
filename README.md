@@ -344,11 +344,11 @@ No hook can start `/compact`: the hook APIs answer a tool call, and none has an 
 }
 ```
 
-The call proceeds either way; a typed command is a side effect, not a verdict. Three rules keep it from being a keyboard anyone can borrow:
+The call proceeds either way; a typed command is a side effect, not a verdict. Two rules keep it from being a keyboard anyone can borrow, and one keeps validate from nagging:
 
 - **User layer only.** A project's gates are repository content, and a repository does not get a keyboard. A project-layer gate that uses it is refused (`refused:not-user-layer`) and `karen validate` names it.
 - **Only commands the owner listed.** `[actions] runtime_commands = ["/compact"]` in the user layer's `config.toml`, each entry one word beginning with `/`; the arguments belong to the gate. The default list is empty, so nothing is allowed until the owner says so. A project layer's list is ignored and named, like `[facts] env`.
-- **Only runtimes the owner configured.** `[actions] runtimes` (user layer; default `claude`, `codex`, `opencode`). A session on any other is refused.
+- **Reported per runtime.** `[actions] runtimes` (user layer; default `claude`, `codex`, `opencode`) says which runtimes `karen validate` reports on, so a user of one runtime is not nagged about the others. It never blocks a delivery: any runtime that has a layer gets the attempt.
 
 Arguments render `{gate}` and `{facts.<path>}` and nothing else: the agent's own `{command}` and `{tool}` text stays literal, `facts.env.*` stays literal, and the rendered line must be one printable line (no control character, no line break, at most 1000 characters including the command), because a newline typed into a prompt submits it and an escape sequence is a keystroke. Text that cannot be typed is `undelivered:unsafe-text`.
 
@@ -546,7 +546,7 @@ claude = 200000
 [actions]
 # Both lists are the USER layer's alone; a project layer's are ignored and named.
 runtime_commands = ["/compact"]   # the only commands `runtime_command` may type (default: none)
-runtimes = ["claude", "codex", "opencode"]  # the runtimes she may type into (default: all three)
+runtimes = ["claude", "codex", "opencode"]  # the runtimes validate reports layers for (default: all three); never blocks a delivery
 ```
 
 ---

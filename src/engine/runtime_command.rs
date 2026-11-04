@@ -9,14 +9,16 @@
 //!
 //! - `refused:not-user-layer`: the gate is not the user layer's. A project's
 //!   gates are repository content, and a repository does not get a keyboard.
-//! - `refused:runtime-not-configured`: the session's runtime is not in the
-//!   user layer's `[actions] runtimes`.
 //! - `refused:not-allowlisted`: the command is not on the user layer's
 //!   `[actions] runtime_commands`.
 //! - `undelivered:unsafe-text`: the command or its rendered arguments hold a
 //!   control character or run past [`MAX_LINE`]. A newline typed into a prompt
 //!   is a second prompt, and an escape sequence is a keystroke.
 //! - `undelivered:no-layer`: allowed, and nothing reaches this session.
+//!
+//! A delivery is attempted on any runtime that has a layer. The user layer's
+//! `[actions] runtimes` only scopes what `karen validate` reports: a list
+//! entry forgotten must not quietly switch a reachable runtime off.
 //!
 //! The log carries the command and the arguments as the gate wrote them,
 //! placeholders unexpanded: what a session's facts rendered into them is data
@@ -41,7 +43,6 @@ pub const MAX_LINE: usize = 1000;
 /// The statuses an attempt ends as.
 pub mod status {
     pub const NOT_USER_LAYER: &str = "refused:not-user-layer";
-    pub const RUNTIME_NOT_CONFIGURED: &str = "refused:runtime-not-configured";
     pub const NOT_ALLOWLISTED: &str = "refused:not-allowlisted";
     pub const UNSAFE_TEXT: &str = "undelivered:unsafe-text";
     pub const NO_LAYER: &str = "undelivered:no-layer";
@@ -85,7 +86,7 @@ pub fn attempt(
     rehearsal: bool,
 ) -> CommandOutcome {
     let runtime = facts::runtime(&req.raw);
-    let status = decide(gate, command, arguments, req, actions, &runtime);
+    let status = decide(gate, command, arguments, req, actions);
     let outcome = CommandOutcome {
         gate: gate.id.clone(),
         runtime,
@@ -111,21 +112,17 @@ pub fn attempt(
     outcome
 }
 
-/// The status, in the order her rules apply: who is asking, which runtime,
-/// which command, what text, and only then whether anything can carry it.
+/// The status, in the order her rules apply: who is asking, which command,
+/// what text, and only then whether anything can carry it.
 fn decide(
     gate: &Gate,
     command: &str,
     arguments: Option<&str>,
     req: &EngineRequest,
     actions: &ActionsConfig,
-    runtime: &str,
 ) -> &'static str {
     if gate.layer != Layer::User {
         return status::NOT_USER_LAYER;
-    }
-    if !actions.runtimes.iter().any(|r| r == runtime) {
-        return status::RUNTIME_NOT_CONFIGURED;
     }
     if !actions.runtime_commands.iter().any(|c| c == command) {
         return status::NOT_ALLOWLISTED;

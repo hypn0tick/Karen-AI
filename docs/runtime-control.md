@@ -35,14 +35,13 @@ runtimes = ["claude", "codex", "opencode"]         # default: all three
 
 Both are read from the user layer alone. A project layer is repository content, and a repository that could name a command or a runtime would hand its own gates a keyboard the owner never lent; a project layer that sets either list has it ignored, and `karen validate` names the layer. This is the same stand `[facts] env` takes, for the same reason.
 
-An entry in `runtime_commands` that is not one word beginning with `/`, or an entry in `runtimes` that is not `claude`, `codex` or `opencode`, is dropped and named by validate. An unset `runtime_commands` is the empty list, not "anything": absence is not a permission.
+An entry in `runtime_commands` that is not one word beginning with `/`, or an entry in `runtimes` that is not `claude`, `codex` or `opencode`, is dropped and named by validate. `runtimes` scopes what validate reports and nothing else: a delivery is attempted on any runtime that has a layer, so a forgotten entry never switches a reachable runtime off. An unset `runtime_commands` is the empty list, not "anything": absence is not a permission.
 
 ## What can stop an attempt, in the order she checks
 
 | Status | Meaning |
 |--------|---------|
 | `refused:not-user-layer` | The gate is not the user layer's. It is ignored, every time, and `karen validate` names it. |
-| `refused:runtime-not-configured` | The session's runtime is not in `[actions] runtimes`. A session whose runtime she cannot name (`unknown`) is in nobody's set. |
 | `refused:not-allowlisted` | The command is not in `[actions] runtime_commands`. |
 | `undelivered:unsafe-text` | The command or the rendered arguments hold a control character, or the whole line runs past 1000 characters. |
 | `undelivered:no-layer` | Allowed, and nothing reaches this session. |

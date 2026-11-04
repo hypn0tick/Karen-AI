@@ -29,9 +29,9 @@ pub const RUNTIMES: [&str; 3] = ["claude", "codex", "opencode"];
 
 /// What a gate's `runtime_command` may do. Both lists are the user layer's
 /// alone, like `[facts] env`: a project's config is repository content, and a
-/// repository that could name a command or a runtime would hand its own gates
-/// a keyboard the owner never lent. `karen validate` reports a project layer
-/// that sets either.
+/// repository that could name a command (or narrow what the owner is told
+/// about their runtimes) would be editing the owner's own permission slip.
+/// `karen validate` reports a project layer that sets either.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionsConfig {
@@ -40,9 +40,10 @@ pub struct ActionsConfig {
     /// default, allows none.
     #[serde(default)]
     pub runtime_commands: Vec<String>,
-    /// The runtimes she may type into. Unset, all three; `[]` is none. A
-    /// session on any other runtime is refused, and `karen validate` reports
-    /// which of these has no layer to reach it.
+    /// The runtimes `karen validate` reports on: which of them has no layer to
+    /// reach it. Unset, all three; `[]` is none. It scopes the report and
+    /// nothing else: a delivery is attempted on any runtime that has a layer,
+    /// so a forgotten entry never switches a reachable runtime off.
     #[serde(default = "default_runtimes")]
     pub runtimes: Vec<String>,
 }

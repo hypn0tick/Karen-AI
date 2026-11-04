@@ -298,7 +298,11 @@ runtimes = ["opencode"]
 
 #[test]
 #[serial]
-fn karen_refuses_a_runtime_outside_the_configured_set() {
+fn karen_still_attempts_a_runtime_outside_the_configured_set() {
+    // `[actions] runtimes` scopes what validate reports; it is not a switch. A
+    // runtime left off the list is attempted all the same, so a forgotten entry
+    // can never quietly disable a runtime that has a layer. Nothing reaches
+    // claude yet, so the attempt ends as the layer-less status, not a refusal.
     let env = user_env(
         "[actions]\nruntime_commands = [\"/compact\"]\nruntimes = [\"opencode\"]",
         &[("compact.json", gate("compact-it", "/compact", None, true))],
@@ -310,14 +314,14 @@ fn karen_refuses_a_runtime_outside_the_configured_set() {
     assert_exit_code(code, 0);
     let line = only_line(&env);
     assert_eq!(line["runtime"], "claude");
-    assert_eq!(line["status"], "refused:runtime-not-configured");
+    assert_eq!(line["status"], "undelivered:no-layer");
 }
 
 #[test]
 #[serial]
-fn karen_refuses_a_session_whose_runtime_she_cannot_name() {
-    // No `--runtime`, no transcript: the runtime is unknown, and unknown is in
-    // nobody's configured set.
+fn karen_attempts_a_session_whose_runtime_she_cannot_name() {
+    // No `--runtime`, no transcript: the runtime is `unknown`. She cannot name
+    // a layer for it, so it ends as undelivered, logged under that name.
     let env = user_env(
         ALLOW_COMPACT,
         &[("compact.json", gate("compact-it", "/compact", None, true))],
@@ -326,7 +330,7 @@ fn karen_refuses_a_session_whose_runtime_she_cannot_name() {
     assert_exit_code(code, 0);
     let line = only_line(&env);
     assert_eq!(line["runtime"], "unknown");
-    assert_eq!(line["status"], "refused:runtime-not-configured");
+    assert_eq!(line["status"], "undelivered:no-layer");
 }
 
 #[test]

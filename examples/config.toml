@@ -72,7 +72,7 @@ claude = 200000
 # word beginning with `/`; the arguments belong to the gate. Empty (the default)
 # allows nothing, so a gate that types is refused until you name its command.
 # runtime_commands = ["/compact"]
-# The runtimes she may type into. Unset means all three; a session on any
-# other is refused, and `karen validate` reports which of these no layer
-# reaches. The Karen who types only where she was invited.
+# The runtimes `karen validate` reports layers for. Unset means all three. It
+# scopes the report and nothing else: a delivery is attempted on any runtime
+# that has a layer. The Karen who stops nagging you about runtimes you never use.
 # runtimes = ["claude", "codex", "opencode"]
