@@ -56,7 +56,7 @@ An entry in `runtime_commands` that is not one word beginning with `/`, or an en
 `arguments` renders `{gate}` and `{facts.<path>}` the way a reason does: a string as itself, anything else as its compact JSON, an absent fact as `(unknown)`. It renders nothing else:
 
 - `{command}` and `{tool}` stay literal. They are the agent's own words, and an agent should not be able to write the prompt a gate types at it. `karen validate` names a gate that templates them.
-- `{facts.env.*}` stays literal, as it does in every reason: the allowlist granted a match, not a broadcast. `karen validate` names a gate that templates one.
+- `{facts.env.*}` and `{facts.screen.*}` stay literal, as they do in every reason: the allowlist granted a match, and a screen is the conversation as it stands, neither a broadcast. `karen validate` names a gate that templates one.
 
 What is typed must be one printable line. A newline typed into a prompt submits it and what follows is a second prompt; an escape sequence is a keystroke, not text. So a control character anywhere in the command or the rendered arguments is `undelivered:unsafe-text`, as is a line past 1000 characters (a prompt line a person could have typed). `karen validate` finds a literal control character in a gate's own arguments before the gate runs.
 

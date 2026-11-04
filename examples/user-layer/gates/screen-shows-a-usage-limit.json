@@ -1,0 +1,43 @@
+// User-layer example 2 — notice a usage-limit banner that only the screen shows.
+// Teaches: `facts.screen.*`, `field_regex` on the screen's text, and why a
+// screen fact never appears in a reason.
+//
+// A provider's usage-limit notice is drawn on the terminal and often reaches no
+// transcript Karen can read. For a session started as `karen run <runtime>`,
+// the terminal host holds the screen, and a gate can ask about it:
+//
+//   facts.screen.usage_limit  true when a limit banner is among the last rows
+//   facts.screen.text         the whole visible screen, for field_regex only
+//
+// This gate uses the text so the pattern is yours to tune. Two rules to know:
+//
+// * The screen is the conversation as it stands, so it can hold anything. It
+//   is matched and never shown: `{facts.screen.text}` in a reason stays
+//   literal, nothing writes it to a log, nothing caches it. The reason below
+//   is therefore fixed text.
+// * A session that is not hosted by `karen run` for this runtime has no screen
+//   facts at all, and this gate stays quiet (absence is never a match).
+//
+// Provisional: the pattern follows how the runtimes word their limit notices
+// and has not been checked against a banner recorded from one. Look at what
+// your runtime really prints, and adjust. Ships disabled for that reason.
+{
+  "id": "screen-shows-a-usage-limit",
+  "name": "A usage limit is on the screen",
+  "description": "Notify when the hosted session's screen shows a usage or rate limit banner.",
+  "event": "Stop",
+  "priority": 50,
+  "enabled": false,
+  "tags": ["facts", "screen", "notify"],
+
+  "match": {
+    "all": [
+      { "type": "field_regex", "field": "facts.screen.text", "pattern": "(?i)(usage|rate|session|weekly) limit" }
+    ]
+  },
+
+  "action": {
+    "type": "notify",
+    "reason": "The session's screen shows a usage limit. Check the terminal before the next prompt."
+  }
+}

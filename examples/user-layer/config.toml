@@ -1,0 +1,37 @@
+# User-layer example — the config that goes with the gates beside it.
+#
+# Copy to ~/.karen/policies/config.toml (merge by hand if you already have one).
+# Everything below is read from the USER layer alone: a project layer that sets
+# any of it is ignored, and `karen validate` names the layer that tried.
+# Repository content never gets to lend itself a keyboard.
+
+# The only commands a `runtime_command` gate may type into a session. Each is one
+# word beginning with `/`; the arguments belong to the gate. Empty (the default)
+# allows nothing, and a gate that types is refused until its command is here.
+[actions]
+runtime_commands = ["/compact"]
+
+# How `karen run` waits for a session and types into it. These are the defaults,
+# written out so they are yours to change.
+[host]
+# The pause between a typed line and its Enter, in ms (0-5000). A terminal UI
+# that reads a burst of input as a paste would otherwise swallow the Enter.
+# 150 is not measured against every runtime: OpenCode takes it (tried against a
+# live session); Claude Code and Codex are unverified.
+enter_delay_ms = 150
+# How long the session must have drawn nothing to count as idle, in ms (50-10000).
+quiet_ms = 400
+# How long a command waits for an idle session before it is given up on as
+# `undelivered:timeout`, in seconds (1-3600).
+timeout_secs = 120
+
+# Claude Code does not report the size of its window, so a gate on
+# `facts.context_ratio` needs it here, for your model (Codex and OpenCode report
+# their own). Uncomment and set it to the window your model really runs in.
+# [facts.context_window]
+# claude = 200000
+
+# The environment variables a gate may match as `facts.env.<NAME>`. A variable
+# not named here is never read.
+# [facts]
+# env = ["HCOM_INSTANCE"]

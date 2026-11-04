@@ -659,3 +659,106 @@ fn karen_examples_briefing_delivered_at_session_start() {
     assert_eq!(code, 0);
     assert_hook_allow(&part2);
 }
+
+/// A user layer made from the shipped `examples/user-layer/` directory, with its gates switched on
+/// when `enabled`: the config beside the gates, copied where the user layer lives.
+#[cfg(feature = "host")]
+fn user_layer_example(enabled: bool) -> TestEnv {
+    let env = TestEnv::with_config(crate::e2e::common::DEFAULT_CONFIG, &[], &[]);
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/user-layer");
+    let root = env.home_dir.join(".karen").join("policies");
+    std::fs::create_dir_all(root.join("gates")).expect("user gates dir");
+    std::fs::copy(source.join("config.toml"), root.join("config.toml")).expect("user config");
+    let mut copied = 0;
+    for entry in std::fs::read_dir(source.join("gates"))
+        .expect("gates")
+        .flatten()
+    {
+        let mut gate = std::fs::read_to_string(entry.path()).expect("a shipped gate");
+        if enabled {
+            gate = gate.replace("\"enabled\": false", "\"enabled\": true");
+        }
+        std::fs::write(root.join("gates").join(entry.file_name()), gate).expect("copy a gate");
+        copied += 1;
+    }
+    assert_eq!(copied, 2, "the user-layer example ships two gates");
+    env
+}
+
+#[cfg(feature = "host")]
+fn user_layer_issues(env: &TestEnv) -> (serde_json::Value, Vec<String>) {
+    let (code, stdout, _) = env.run_karen(&["validate", "--json"]);
+    assert_eq!(code, 0, "{stdout}");
+    let data = assert_json_ok(&stdout);
+    let issues = data["issues"]
+        .as_array()
+        .expect("issues")
+        .iter()
+        .filter_map(|issue| issue["message"].as_str().map(str::to_string))
+        .collect();
+    (data, issues)
+}
+
+#[cfg(feature = "host")]
+#[test]
+fn karen_user_layer_example_validates_clean_as_shipped_and_switched_on() {
+    // Both ways: disabled gates owe no warning, and the same gates enabled are checked the way a
+    // delivery would be (user layer, allowlisted command, text that can be typed, a layer that
+    // reaches every runtime). Neither says a word.
+    for enabled in [false, true] {
+        let env = user_layer_example(enabled);
+        let (data, issues) = user_layer_issues(&env);
+        let user_gates = data["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|gate| gate["layer"] == "user")
+            .count();
+        assert_eq!(user_gates, 2, "enabled={enabled}");
+        assert!(issues.is_empty(), "enabled={enabled}: {issues:?}");
+    }
+}
+
+#[cfg(feature = "host")]
+#[test]
+fn karen_user_layer_example_without_its_allowlist_is_named() {
+    // The gate is only as good as the line in config.toml beside it: take the line away and the
+    // enabled gate is named, not silently refused at the first delivery.
+    let env = user_layer_example(true);
+    let config = env.home_dir.join(".karen/policies/config.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        &config,
+        text.replace("runtime_commands = [\"/compact\"]", ""),
+    )
+    .unwrap();
+    let (_, issues) = user_layer_issues(&env);
+    assert!(
+        issues.iter().any(|m| m.contains("compact-when-full")),
+        "{issues:?}"
+    );
+}
+
+#[cfg(feature = "host")]
+#[test]
+fn karen_user_layer_example_types_nothing_into_a_session_that_is_not_hosted() {
+    // Switched on, with the window over 85%: the gate fires and the attempt is filed, but a Claude
+    // Code session that `karen run` does not host has no layer, so nothing is typed and the ledger
+    // says why.
+    let env = user_layer_example(true);
+    let input = serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "ex-compact",
+        "facts": { "context_ratio": 0.9 },
+    })
+    .to_string();
+    let (code, _stdout, _) = env.run_hook(&input, &["--runtime", "claude"]);
+    assert_eq!(code, 0);
+    let filed = crate::e2e::common::commands::runtime_lines(&env);
+    let line = filed
+        .iter()
+        .find(|line| line["gate"] == "compact-when-full")
+        .unwrap_or_else(|| panic!("the attempt is filed: {filed:?}"));
+    assert_eq!(line["command"], "/compact");
+    assert_eq!(line["status"], "undelivered:no-layer");
+}

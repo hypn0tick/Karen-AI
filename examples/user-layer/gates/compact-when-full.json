@@ -1,0 +1,58 @@
+// User-layer example 1 — type /compact into the session when its window fills.
+// Teaches: the `runtime_command` action, the latch, and the owner's permission.
+//
+// A gate that types into a session is the user layer's alone. This file belongs
+// in ~/.karen/policies/gates/, never a repository's .karen/policies/: a project
+// layer's `runtime_command` gate is ignored every time, and `karen validate`
+// names it. The command must also be on the allowlist in your config.toml
+// (`[actions] runtime_commands = ["/compact"]`); off the list, every attempt is
+// refused and logged as `refused:not-allowlisted`.
+//
+// How it fires: on Stop, when the window is over 85% full. The latch
+// (`state.field` + `rearm_below`) lets it fire once per filling and stay quiet
+// until the window has fallen below 50% again, which is what a compaction
+// does. The call it fired on is untouched: a typed command is a side effect,
+// not a verdict.
+//
+// How it reaches the session, per runtime:
+//   OpenCode: the bridge plugin's own API, no terminal needed.
+//   Claude Code, Codex: the session must have been started as
+//   `karen run claude` / `karen run codex`, which owns the terminal. A session
+//   started any other way ends as `undelivered:no-layer` in
+//   ~/.karen/logs/karen-runtime.jsonl, and nothing is typed.
+// The line is typed when the session is idle (prompt empty, no turn running),
+// queued until then, and given up on after `[host] timeout_secs`.
+//
+// Ships disabled, so installing the pack types nothing. Switch it on once the
+// allowlist line is in your config.toml. The Karen who asks the owner before
+// she touches the keyboard.
+{
+  "id": "compact-when-full",
+  "name": "Compact when the window fills",
+  "description": "Type /compact into the session when its context window passes 85%, once per filling.",
+  "event": "Stop",
+  "priority": 50,
+  "enabled": false,
+  "tags": ["runtime-command", "facts", "context"],
+
+  "match": {
+    "all": [
+      { "type": "field_gte", "field": "facts.context_ratio", "value": 0.85 }
+    ]
+  },
+
+  "action": {
+    "type": "runtime_command",
+    "command": "/compact",
+    // Arguments render `{gate}` and `{facts.<path>}` and nothing else. Screen
+    // and env facts stay literal, and the agent's own {command} and {tool}
+    // too: an agent does not get to write the prompt a gate types at it.
+    "arguments": "keep the open items, the decisions and the commit ids"
+  },
+
+  "state": {
+    "key": "latch:compact-when-full",
+    "field": "facts.context_ratio",
+    "rearm_below": 0.5
+  }
+}

@@ -354,7 +354,7 @@ The call proceeds either way; a typed command is a side effect, not a verdict. T
 - **Only commands the owner listed.** `[actions] runtime_commands = ["/compact"]` in the user layer's `config.toml`, each entry one word beginning with `/`; the arguments belong to the gate. The default list is empty, so nothing is allowed until the owner says so. A project layer's list is ignored and named, like `[facts] env`.
 - **Reported per runtime.** `[actions] runtimes` (user layer; default `claude`, `codex`, `opencode`) says which runtimes `karen validate` reports on, so a user of one runtime is not nagged about the others. It never blocks a delivery: any runtime that has a layer gets the attempt.
 
-Arguments render `{gate}` and `{facts.<path>}` and nothing else: the agent's own `{command}` and `{tool}` text stays literal, `facts.env.*` stays literal, and the rendered line must be one printable line (no control character, no line break, at most 1000 characters including the command), because a newline typed into a prompt submits it and an escape sequence is a keystroke. Text that cannot be typed is `undelivered:unsafe-text`.
+Arguments render `{gate}` and `{facts.<path>}` and nothing else: the agent's own `{command}` and `{tool}` text stays literal, `facts.env.*` and `facts.screen.*` stay literal, and the rendered line must be one printable line (no control character, no line break, at most 1000 characters including the command), because a newline typed into a prompt submits it and an escape sequence is a keystroke. Text that cannot be typed is `undelivered:unsafe-text`.
 
 Every attempt ends as exactly one status, rides the verdict (`karen evaluate --json` shows `runtime_commands`) and lands as one JSON line — `time`, `session`, `gate`, `runtime`, `command`, `arguments`, `layer`, `status` — in `<Karen home>/logs/karen-runtime.jsonl`, rotated like the notify log. The log keeps the arguments as the gate wrote them, placeholders unexpanded: what a fact rendered into them is data about the session, and the ledger does not keep it. A rehearsal (`karen evaluate`) files nothing. A command no layer can carry is logged `undelivered:no-layer` and `karen validate` says which configured runtimes have no layer. Never silent.
 
@@ -363,6 +363,10 @@ OpenCode has a layer today: its bridge types through the server's own API once t
 Claude Code and Codex can only be reached through their terminal, so `karen run claude` (or `codex`, or any program on `PATH`) hosts the runtime in a pseudo-terminal Karen owns and serves a local control endpoint that the runtime's hooks find through the `KAREN_HOST_*` variables it inherits. A `runtime_command` for such a session joins the host's queue and is typed when the session is idle (nothing drawn for 400 ms, the prompt up and empty, no turn running), one per idle, and a line that finds no idle moment in two minutes is logged `undelivered:timeout`. A half-typed prompt is never typed into. A Claude Code or Codex session that was not started under `karen run` is still `undelivered:no-layer`. The host is the default-on cargo feature `host`; `--no-default-features` is the lean hook-and-gate build.
 
 Which layer each runtime gets, the host's endpoint and threat model, and the whole status list: [`docs/runtime-control.md`](docs/runtime-control.md).
+
+A ready-made user layer to copy from, with the allowlist, the `[host]` knobs and two gates (one that types `/compact`, one that reads the screen): [`examples/user-layer/`](examples/user-layer/). Both gates ship disabled.
+
+What has been tried against a live agent: the terminal layer against a live OpenCode (a line typed at once when idle; a second queued line typed only after the first turn ended). What has not: a live Claude Code or Codex, where the idle rules come from one recorded screen at rest and from the tool's own description. Screens can be recorded from any agent CLI with `cargo run --example record-screens` (see [`docs/runtime-control.md`](docs/runtime-control.md)), and the install check on a throwaway `karen run claude` session is what settles the rest.
 
 ### State (deny_once_then_warn)
 
@@ -629,7 +633,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-417 tests passing (102 unit, 20 integration, 295 e2e — zero ignored). The Karen
+420 tests passing (102 unit, 20 integration, 298 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
