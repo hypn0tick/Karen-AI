@@ -245,7 +245,10 @@ impl Engine {
                 let key = spec.map_or(gate.id.as_str(), |s| s.key.as_str());
                 let key = match spec.map(|s| s.track) {
                     Some(crate::policy::gate::Track::Input) => {
-                        format!("{key}:{:016x}", fnv1a(req.raw.get("tool_input")))
+                        format!(
+                            "{key}:{:016x}",
+                            fnv1a(strike_input(req.raw.get("tool_input")).as_ref())
+                        )
                     }
                     _ => key.to_string(),
                 };
@@ -441,6 +444,26 @@ fn one_line(text: &str) -> String {
         .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The part of a tool input that decides what runs, for an input-tracked strike
+/// count. A shell call arrives with a free-text `description` of the command
+/// (the shell tools of Claude Code and `OpenCode` both send one), and the same command in other words
+/// is still the same command, so the note is dropped when a string `command`
+/// sits beside it. Without a `command` the `description` is part of the payload
+/// (an issue tracker's `create_issue`), and it stays in the key. Every other
+/// field, such as `timeout` or `workdir`, changes what runs and stays too.
+fn strike_input(tool_input: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    let mut input = tool_input?.clone();
+    if let Some(fields) = input.as_object_mut() {
+        if fields
+            .get("command")
+            .is_some_and(serde_json::Value::is_string)
+        {
+            fields.remove("description");
+        }
+    }
+    Some(input)
 }
 
 /// FNV-1a over a value's JSON text: a strike key that is stable across runs and

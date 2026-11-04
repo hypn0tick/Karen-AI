@@ -246,7 +246,11 @@ pub enum Track {
     #[default]
     Session,
     /// One count per distinct tool input: each new command is held once, and
-    /// the same command retried passes with the warning.
+    /// the same command retried passes with the warning. A shell command's
+    /// free-text `description` is not part of the input: the same command in
+    /// other words is the same command. Every field that changes what runs
+    /// (`timeout`, `workdir`) is, and so is a `description` that arrives
+    /// without a `command`, because there it is the payload.
     Input,
 }
 

@@ -296,3 +296,90 @@ fn karen_counts_input_tracked_strikes_per_command() {
     let (code, stdout, _) = env.run_karen(&["validate", "--json"]);
     assert_ne!(code, 0, "an unknown track is a load error: {stdout}");
 }
+
+#[test]
+#[serial]
+fn karen_ignores_a_commands_description_when_counting_input_strikes() {
+    // The runtime's `description` is free text about a command, not part of
+    // what runs: the same command retried with new wording is the same
+    // command. Everything that changes what runs still counts.
+    let shell_gate = r#"{ "id": "heredoc", "event": "PreToolUse", "tool": "Bash",
+        "match": { "all": [ { "type": "command_contains", "value": "<<" } ] },
+        "action": { "type": "deny_once_then_warn", "first_reason": "held once", "second_reason": "retry passes" },
+        "state": { "track": "input", "key": "heredoc", "max_strikes": 2 } }"#;
+    let tracker_gate = r#"{ "id": "tracker", "event": "PreToolUse", "tool": "create_issue",
+        "match": { "all": [ { "type": "always" } ] },
+        "action": { "type": "deny_once_then_warn", "first_reason": "filed once", "second_reason": "refile passes" },
+        "state": { "track": "input", "key": "tracker", "max_strikes": 2 } }"#;
+    let env = TestEnv::with_config(
+        FILE_CONFIG,
+        &[
+            crate::e2e::common::fixtures::GateFixture {
+                file: "heredoc.json",
+                content: shell_gate,
+            },
+            crate::e2e::common::fixtures::GateFixture {
+                file: "tracker.json",
+                content: tracker_gate,
+            },
+        ],
+        &[],
+    );
+    let call = |tool: &str, tool_input: serde_json::Value| {
+        let input = json!({ "hook_event_name": "PreToolUse", "session_id": "input-description", "tool_name": tool, "tool_input": tool_input });
+        let (code, stdout, _) = env.run_hook(&input.to_string(), &[]);
+        assert_exit_code(code, 0);
+        stdout
+    };
+    let shell = |command: &str, description: &str| {
+        call(
+            "Bash",
+            json!({ "command": command, "description": description }),
+        )
+    };
+
+    assert_hook_deny_once_first(&shell("cat <<EOF one", "write the file"), Some("held once"));
+    // The same command in other words is the same command: it passes.
+    assert_hook_warned_retry(
+        &shell("cat <<EOF one", "put the text in the file"),
+        Some("retry passes"),
+    );
+    // A different command is held, whatever it says it is for.
+    assert_hook_deny_once_first(
+        &shell("cat <<EOF two", "put the text in the file"),
+        Some("held once"),
+    );
+    // A field that changes what runs still counts: the same command with a
+    // longer timeout is a new call, held once.
+    assert_hook_deny_once_first(
+        &call(
+            "Bash",
+            json!({ "command": "cat <<EOF three", "timeout": 1000 }),
+        ),
+        Some("held once"),
+    );
+    assert_hook_deny_once_first(
+        &call(
+            "Bash",
+            json!({ "command": "cat <<EOF three", "timeout": 2000 }),
+        ),
+        Some("held once"),
+    );
+
+    // Where `description` is the payload, not a note on a command, it stays
+    // in the key: two issues that differ only in their description are two issues.
+    assert_hook_deny_once_first(
+        &call(
+            "create_issue",
+            json!({ "title": "bug", "description": "first" }),
+        ),
+        Some("filed once"),
+    );
+    assert_hook_deny_once_first(
+        &call(
+            "create_issue",
+            json!({ "title": "bug", "description": "second" }),
+        ),
+        Some("filed once"),
+    );
+}

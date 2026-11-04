@@ -301,7 +301,7 @@ Reasons render `{gate}`, `{tool}`, `{command}`, and `{facts.<path>}`: the render
 }
 ```
 
-The Karen who remembers. Strike one: denied, with an explanation and a lecture. Strike two: allowed, with the shorter explanation and a nudge toward the right tool — she has made her point, and repeating herself is what the manager is for. Strike three: there is no third strike. She has already moved on. (She already called your manager.) Add `"reset_on_compact": true` to the state and a compaction wipes the slate for that key: a nudge that taught something the compaction then dropped gets to teach it once more, so "once per session" becomes "once per context". `"track"` says what the count belongs to: `"session"` (the default) teaches once per session, and `"input"` counts each distinct tool input on its own, so every new command is held once and the same command retried goes through with the warning, which suits a check the agent has to confirm per call (a heredoc full of backslashes) rather than learn once. An input-tracked count is not wiped by `reset_on_compact`.
+The Karen who remembers. Strike one: denied, with an explanation and a lecture. Strike two: allowed, with the shorter explanation and a nudge toward the right tool — she has made her point, and repeating herself is what the manager is for. Strike three: there is no third strike. She has already moved on. (She already called your manager.) Add `"reset_on_compact": true` to the state and a compaction wipes the slate for that key: a nudge that taught something the compaction then dropped gets to teach it once more, so "once per session" becomes "once per context". `"track"` says what the count belongs to: `"session"` (the default) teaches once per session, and `"input"` counts each distinct tool input on its own, so every new command is held once and the same command retried goes through with the warning, which suits a check the agent has to confirm per call (a heredoc full of backslashes) rather than learn once. A shell command's free-text `description` is not part of the input she counts, because the same command in other words is the same command; `timeout`, `workdir` and every other field that changes what runs are, and so is a `description` that arrives without a `command`, because there it is the payload. An input-tracked count is not wiped by `reset_on_compact`.
 
 **Stop gates that hold more than once.** A held Stop comes back with `stop_hook_active: true` on every later Stop of that turn (Claude Code sets it natively; the OpenCode bridge sets it the same way), so a Stop gate whose `none` exempts `stop_hook_active` holds a session exactly once and lets every later idle through. To keep holding until the agent states what the gate wants, leave that exemption out and bound the loop with the gate's own state: `deny_once_then_warn` with `max_strikes` set to the number of holds you allow, plus `reset_on_compact` to refill the budget after a compaction. The Karen who keeps asking, counts how often she asked, and knows when asking again stops helping.
 
@@ -525,7 +525,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-257 tests passing (35 unit, 20 integration, 202 e2e — zero ignored). The Karen
+258 tests passing (35 unit, 20 integration, 203 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
