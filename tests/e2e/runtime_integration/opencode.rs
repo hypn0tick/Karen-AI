@@ -980,3 +980,115 @@ console.log(JSON.stringify(result));
         "a deleted session leaves no facts behind: {result}"
     );
 }
+
+#[test]
+#[serial]
+fn karen_opencode_plugin_carries_a_provider_error_into_the_stop_review() {
+    // The case the phase exists for: `session.error` never reaches the agent on
+    // OpenCode, so the Stop review that follows carries the failure as a fact —
+    // and a Stop gate tells the agent what broke and to take smaller steps,
+    // instead of denying a restart of the same giant turn blind. A completed
+    // assistant message without an error clears the fact: a stale apology is
+    // not a fact.
+    const SMALLER_STEPS_GATE: &str = r#"{
+  "id": "smaller-steps",
+  "description": "On a timed-out turn, tell the agent what failed and to take smaller steps.",
+  "event": "Stop",
+  "match": {
+    "all": [ { "type": "field_regex", "field": "facts.provider_error.message", "pattern": "timed out" } ],
+    "none": [ { "type": "field_equals", "field": "stop_hook_active", "value": true } ]
+  },
+  "action": { "type": "deny", "reason": "The provider failed: {facts.provider_error.message} — take smaller steps: one file, one command, one test, then continue." }
+}"#;
+    if !runtime_available("node") {
+        eprintln!("skipping: node not installed");
+        return;
+    }
+    let env = TestEnv::with_config(
+        crate::e2e::common::DEFAULT_CONFIG,
+        &[crate::e2e::common::GateFixture {
+            file: "smaller-steps.json",
+            content: SMALLER_STEPS_GATE,
+        }],
+        &[],
+    );
+    let project_dir = env.temp_dir.path().join("opencode-proj");
+    fs::create_dir_all(&project_dir).unwrap();
+    let mut install = env.karen_cmd(&["setup", "opencode", "--project", "--json"]);
+    install.current_dir(&project_dir);
+    let (code, stdout, _stderr) = run_command(install);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let plugin = project_dir.join(data["installed"][0]["path"].as_str().unwrap());
+    let plugin_url = format!(
+        "file:///{}",
+        plugin
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+
+    let script = env.temp_dir.path().join("drive-provider-error.mjs");
+    let driver = r#"
+const { KarenAI } = await import("__PLUGIN__");
+const prompts = [];
+const client = {
+  session: {
+    get: async () => ({ data: { model: { providerID: "mock", modelID: "big" }, parentID: null } }),
+    messages: async () => ({ data: [
+      { info: { role: "assistant", id: "a1", tokens: { input: 10, output: 2, cache: { read: 0, write: 0 } } }, parts: [{ type: "text", text: "the turn's closing words" }] },
+    ] }),
+    todo: async () => ({ data: [] }),
+    prompt: async (body) => { prompts.push(body?.body?.parts?.[0]?.text ?? ""); }
+  },
+  config: { providers: async () => ({ data: { providers: [{ id: "mock", models: { big: { limit: { context: 1000 } } } }], default: null } }) }
+};
+const hooks = await KarenAI({ directory: "__DIR__", client });
+const sessionError = (message) => ({ type: "session.error", properties: { sessionID: "s1", error: { name: "APIError", data: { message, statusCode: 500 } } } });
+const messageDone = () => ({ type: "message.updated", properties: { sessionID: "s1", info: { role: "assistant", id: "a2", time: { created: 1, completed: 2 }, tokens: { input: 3, output: 4, cache: { read: 0, write: 0 } } } } });
+const idle = () => ({ type: "session.idle", properties: { sessionID: "s1" } });
+await hooks.event({ event: sessionError("The operation timed out") });
+await hooks.event({ event: idle() });
+const held = prompts[0];
+await hooks.event({ event: messageDone() });
+await hooks.event({ event: idle() });
+console.log(JSON.stringify({ held, after: prompts.slice(1) }));
+"#
+    .replace("__PLUGIN__", &plugin_url)
+    .replace("__DIR__", &project_dir.display().to_string());
+    fs::write(&script, driver).unwrap();
+
+    let output = Command::new("node")
+        .arg(&script)
+        .env("HOME", &env.home_dir)
+        .env("KAREN_POLICIES", &env.policies_dir)
+        .env("KAREN_BIN", &env.karen_binary)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "node driver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+
+    // The Stop review carried the cached failure: the gate fires with the
+    // templated text, named in the hold prompt the bridge sends back.
+    let held = result["held"].as_str().unwrap();
+    assert!(
+        held.contains("The provider failed: The operation timed out"),
+        "the hold must quote the provider's own failure: {held}"
+    );
+    assert!(
+        held.contains("smaller steps"),
+        "the hold must prescribe smaller steps: {held}"
+    );
+    // The review is not re-held for the same message: one hold per stop.
+    let after = result["after"].as_array().unwrap();
+    assert!(
+        after.is_empty(),
+        "a reviewed stop is not re-held: {after:?}"
+    );
+}

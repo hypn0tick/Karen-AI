@@ -1495,7 +1495,8 @@ const OPENCODE_PLUGIN_JS: &str = r#"// Karen-AI bridge for OpenCode (plugin API 
 // in the Claude Classic dialect. KAREN_BIN overrides the binary (default: karen on PATH).
 // Occupancy facts ride the payload too: the session's context tokens (kept current by
 // `message.updated`) and its model's context window (resolved once per session), so a
-// gate on `facts.context_ratio` runs on OpenCode without reading anything itself.
+// gate on `facts.context_ratio` runs on OpenCode without reading anything itself. The
+// provider's own failures (`session.error`) ride the Stop review the same way.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -1593,6 +1594,7 @@ export const KarenAI = async ({ directory, client }) => {
   const offDuty = new Set(); // sessions already told that no policy is enforced
   const lastTokens = new Map(); // session -> context tokens of its last assistant message
   const windows = new Map(); // session -> its model's context window, null when resolved to none
+  const errors = new Map(); // session -> the provider's own last failure, cleared when a later message completes clean
   // A systemMessage holds one line per notice. A policy that does not load fails open, and
   // each session hears that once, not on every call; every other line passes through.
   const notice = (sid, message) => {
@@ -1621,6 +1623,12 @@ export const KarenAI = async ({ directory, client }) => {
     const facts = {};
     const tokens = lastTokens.get(sid);
     if (Number.isFinite(tokens)) facts.context_tokens = tokens;
+    // The provider's own last failure rides the Stop review, because that is where a
+    // gate can act on it: OpenCode never delivers a ProviderError to the agent, so the
+    // failure would otherwise be a fact nobody can branch on. Cleared the moment a
+    // later assistant message completes without an error, so the fact never goes stale.
+    const failure = sid ? errors.get(sid) : undefined;
+    if (failure) facts.provider_error = failure;
     if (sid && client?.session && client?.config) {
       try {
         if (!windows.has(sid)) {
@@ -1676,9 +1684,28 @@ export const KarenAI = async ({ directory, client }) => {
         if (info?.role === "assistant") {
           const t = info.tokens;
           const sid = event?.properties?.sessionID ?? info.sessionID;
+          // A completed assistant message without an error means the pipe works
+          // again: the provider's last failure stops being a fact the moment a
+          // later call gets through.
+          if (sid && info.time?.completed && !info.error) errors.delete(sid);
           const tokens = t ? (t.input ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0) : 0;
           if (sid && tokens > 0) lastTokens.set(sid, tokens);
         }
+        return;
+      }
+      // The provider speaking for itself: cache the failure for the Stop review,
+      // and file it with Karen as its own event for whoever tails the log. The
+      // failure never reaches the agent here — OpenCode has no stop to hold —
+      // so the Stop that follows is where a gate gets to say it.
+      if (event?.type === "session.error") {
+        const sid = event?.properties?.sessionID;
+        const err = event?.properties?.error;
+        if (sid && err) {
+          const message = err?.data?.message ?? err?.message ?? String(err?.name ?? "provider error");
+          const model = await wakeModel(sid);
+          errors.set(sid, { message, ...(model ? { provider: model.providerID, model: model.modelID } : {}) });
+        }
+        await karen({ hook_event_name: "ProviderError", session_id: sid, cwd: directory, facts: { runtime: "opencode", ...(sid && errors.has(sid) ? { provider_error: errors.get(sid) } : {}) } });
         return;
       }
       // A deleted session's entries are dropped the moment it is, so a long-running
@@ -1693,6 +1720,7 @@ export const KarenAI = async ({ directory, client }) => {
           offDuty.delete(sid);
           lastTokens.delete(sid);
           windows.delete(sid);
+          errors.delete(sid);
         }
         return;
       }
