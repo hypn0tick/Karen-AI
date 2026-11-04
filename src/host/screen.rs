@@ -301,6 +301,16 @@ mod tests {
     const OPENCODE_AFTER: &str =
         include_str!("../../tests/fixtures/screens/opencode-after-turn.txt");
 
+    const CLAUDE_BUSY: &str = include_str!("../../tests/fixtures/screens/claude-busy.txt");
+
+    #[test]
+    fn a_recorded_claude_screen_mid_turn_reads_as_a_turn_in_flight() {
+        let got = extract("claude", &dump(CLAUDE_BUSY), &all());
+        assert_eq!(got["turn_running"], Value::from(true));
+        assert_eq!(got["prompt_empty"], Value::from(true));
+        assert_eq!(got["context_used_percent"], Value::from(86));
+    }
+
     #[test]
     fn recorded_opencode_screens_read_as_they_look() {
         let idle = extract("opencode", &dump(OPENCODE_IDLE), &all());

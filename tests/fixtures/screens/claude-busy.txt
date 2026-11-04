@@ -1,0 +1,10 @@
+* Calculating… (46m 18s · ↓ 139.5k tokens · thought for 6s)
+  ⎿  Tip: Use /clear to start fresh when switching topics and free up context
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [Sonnet 5.5] │ project git:(main*)
+  Context █████████░ 86% (in: 2, cache: 858k) │ Usage Weekly █████████░ 86% (resets in 4d 12h)
+  ◐ Read: .../main.rs | ◐ Read: .../main.rs | ✓ Bash ×9 | ✓ Write ×1
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

@@ -14,10 +14,11 @@
 //! worst a wrong profile does is let a command time out and say so, never type into a turn.
 //!
 //! The profiles are checked as far as there are recorded screens (`tests/fixtures/screens/`):
-//! `OpenCode`'s against four screens recorded from a live one, Claude Code's against one screen at
-//! rest, the plain rule against a hosted fake runtime, and Codex's against none, so it follows how
-//! Codex describes itself. A recorded Codex screen would replace that guess with a check. The `facts.screen.*` extractors in [`super::screen`] read through [`read`] too, so the
-//! two cannot disagree about where the prompt is.
+//! `OpenCode`'s against four screens recorded from a live one, Claude Code's against two (at rest and
+//! mid-turn), the plain rule against a hosted fake runtime, and Codex's against none, so it follows
+//! how Codex describes itself. A recorded Codex screen would replace that guess with a check. The
+//! `facts.screen.*` extractors in [`super::screen`] read through [`read`] too, so the two cannot
+//! disagree about where the prompt is.
 
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -40,6 +41,13 @@ static COMPOSER: LazyLock<Regex> = LazyLock::new(|| {
         .expect("the composer pattern is valid")
 });
 
+/// A running spinner: an ellipsis, then a parenthesised timer that opens on a duration
+/// (`Calculating… (46m 18s · ↓ 139.5k tokens`, `Thinking… (12s · esc to interrupt)`). A finished
+/// turn's summary (`Baked for 57s · done`) has neither the ellipsis nor the bracket.
+static TURN_TIMER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:…|\.\.\.) \(\d+[hms]\b").expect("the turn timer pattern is valid")
+});
+
 /// What differs between runtimes: how many non-blank rows may sit under the composer (rules, a
 /// status line), and the phrases that mean a turn is running.
 struct Profile {
@@ -47,12 +55,15 @@ struct Profile {
     busy: &'static [&'static str],
     /// Whether the composer is a box of heavy-bar rows (`OpenCode`) and not a prompt-marker row.
     boxed: bool,
+    /// Whether a spinner line with a running timer (`Calculating… (46m 18s · …`) means a turn.
+    timer: bool,
 }
 
 const GENERIC: Profile = Profile {
     below: 0,
     busy: &[],
     boxed: false,
+    timer: false,
 };
 
 fn profile(runtime: &str) -> &'static Profile {
@@ -60,16 +71,19 @@ fn profile(runtime: &str) -> &'static Profile {
         below: 8,
         busy: &["esc to interrupt"],
         boxed: false,
+        timer: true,
     };
     const CODEX: Profile = Profile {
         below: 5,
         busy: &["esc to interrupt"],
         boxed: false,
+        timer: false,
     };
     const OPENCODE: Profile = Profile {
         below: 5,
         busy: &["esc interrupt", "esc to interrupt"],
         boxed: true,
+        timer: false,
     };
     match runtime {
         "claude" => &CLAUDE,
@@ -167,10 +181,11 @@ pub fn read<'a>(runtime: &str, text: &'a str) -> Reading<'a> {
     // the composer's place.
     let anchor = composer.map_or(used.saturating_sub(1), |found| found.at);
     let from = anchor.saturating_sub(MARKER_WINDOW);
-    let running = (!profile.busy.is_empty()).then(|| {
+    let running = (!profile.busy.is_empty() || profile.timer).then(|| {
         rows[from..].iter().any(|row| {
-            let row = row.to_lowercase();
-            profile.busy.iter().any(|marker| row.contains(marker))
+            let lowered = row.to_lowercase();
+            profile.busy.iter().any(|marker| lowered.contains(marker))
+                || (profile.timer && TURN_TIMER.is_match(row))
         })
     });
     Reading { composer, running }
@@ -283,6 +298,57 @@ mod tests {
     #[test]
     fn claude_with_an_empty_composer_under_its_rules_is_idle() {
         assert_eq!(verdict("claude", CLAUDE_IDLE), Verdict::Idle);
+    }
+
+    /// A Claude Code screen mid-turn, read from a live session in a Windows Terminal tab through
+    /// the console API (`examples/attach-probe.rs`), scrubbed. Its spinner line has a running timer
+    /// and no "esc to interrupt": a turn the phrase alone would have called idle.
+    const CLAUDE_BUSY: &str = include_str!("../../tests/fixtures/screens/claude-busy.txt");
+
+    #[test]
+    fn claude_mid_turn_on_a_recorded_screen_is_busy_without_the_interrupt_hint() {
+        assert!(!CLAUDE_BUSY.to_lowercase().contains("esc to interrupt"));
+        assert_eq!(
+            verdict("claude", CLAUDE_BUSY),
+            Verdict::Busy("a turn is running")
+        );
+    }
+
+    #[test]
+    fn a_spinner_timer_is_a_turn_and_a_finished_turns_summary_is_not() {
+        for spinner in [
+            "* Calculating… (46m 18s · ↓ 139.5k tokens · thought for 6s)",
+            "✻ Thinking… (12s)",
+            "✶ Working... (3m 2s · ↑ 1.2k tokens)",
+        ] {
+            let text = CLAUDE_IDLE.replace("✻ Baked for 57s · done", spinner);
+            assert_eq!(
+                verdict("claude", &text),
+                Verdict::Busy("a turn is running"),
+                "{spinner}"
+            );
+        }
+        for settled in [
+            "✻ Baked for 57s · done",
+            "✻ Worked for 2m 3s",
+            "The build finished… (3 files changed)",
+        ] {
+            let text = CLAUDE_IDLE.replace("✻ Baked for 57s · done", settled);
+            assert_eq!(verdict("claude", &text), Verdict::Idle, "{settled}");
+        }
+    }
+
+    #[test]
+    fn the_spinner_timer_is_claudes_alone() {
+        let text = CLAUDE_IDLE.replace(
+            "✻ Baked for 57s · done",
+            "* Calculating… (46m 18s · ↓ 139.5k tokens)",
+        );
+        assert_eq!(
+            verdict("fake-runtime", &text),
+            Verdict::Busy("no prompt on the screen"),
+            "an unknown runtime has no turn marker, only its prompt rule"
+        );
     }
 
     #[test]

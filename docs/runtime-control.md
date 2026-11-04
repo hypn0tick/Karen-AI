@@ -150,7 +150,7 @@ Nothing is guessed in the idle direction: a screen with no prompt she recognises
 How far the prompt rules are checked, runtime by runtime:
 
 - **OpenCode**: recorded from a live `opencode` (a free model, in a throwaway home) hosted by `karen run`: the first screen, two characters typed, mid-turn and after a turn (`tests/fixtures/screens/opencode-*.txt`). Its composer is not a `>` row but a box of `┃` rows closed by a `╹▀▀▀` rule, with a placeholder hint ("Ask anything…") on a fresh session, and its turn marker is `esc interrupt`. Delivery was tried against that live session too: with two lines queued back to back, the first was typed at once (169 ms) and the second waited 7.4 s, through the first turn, and was typed only after OpenCode went idle; both were submitted and answered.
-- **Claude Code**: one screen at rest, recorded read-only from a live session (`claude-idle.txt`). The mid-turn and half-typed screens are not recorded, so those two rules follow how Claude Code describes itself.
+- **Claude Code**: two screens recorded read-only from live sessions, one at rest (`claude-idle.txt`) and one mid-turn (`claude-busy.txt`, read from a Windows Terminal tab through the console API). The mid-turn one showed that the "esc to interrupt" hint is not always on screen, so a running turn is recognised by its spinner line too: an ellipsis and a bracket that opens on a running timer (`Calculating… (46m 18s · …`). The half-typed rule follows how Claude Code describes itself; it is not recorded.
 - **Codex**: no recording; the rules follow how Codex describes itself. This is the least checked.
 - **Any other program** gets the plain rule (a `>` prompt on the last row), which the fake runtime's recorded screens check.
 
