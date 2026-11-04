@@ -251,3 +251,34 @@ fn karen_rotates_the_notify_log_past_ten_mib() {
     );
     assert_eq!(lines[0]["gate"], "notify-rotate");
 }
+
+#[test]
+#[serial]
+fn karen_collects_a_fact_only_a_reason_names() {
+    // The gate matches on nothing but `always`, so no matcher names the fact:
+    // the reason that says it aloud is what asks for it. Without that it would
+    // render `(unknown)` for a fact she could have read.
+    const SAYS_ITS_RUNTIME: &str = r#"{
+  "id": "says-its-runtime",
+  "description": "A gate whose only mention of a fact is in its reason.",
+  "event": "PreToolUse",
+  "match": { "all": [ { "type": "always" } ] },
+  "action": { "type": "notify", "reason": "running on {facts.runtime}, session {facts.session_id}, env {facts.env.HOME}" }
+}"#;
+    let env = TestEnv::with_config(
+        DEFAULT_CONFIG,
+        &[GateFixture {
+            file: "says-its-runtime.json",
+            content: SAYS_ITS_RUNTIME,
+        }],
+        &[],
+    );
+    let (code, _stdout, _stderr) = env.run_hook(&pretool("notify-6"), &["--runtime", "claude"]);
+    assert_exit_code(code, 0);
+    let lines = notify_lines(&env);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(
+        lines[0]["text"], "running on claude, session notify-6, env {facts.env.HOME}",
+        "a templated fact is collected, and a templated env fact is never read or rendered"
+    );
+}

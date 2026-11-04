@@ -218,6 +218,29 @@ impl ActionDef {
     }
 }
 
+impl ActionDef {
+    /// Every `{facts.<path>}` placeholder in the texts this action renders, as
+    /// the path after `facts.`. A fact only a reason or an argument names is
+    /// still a fact the gate reads, so it is collected like one a matcher
+    /// names, and `karen validate` checks its spelling the same way.
+    #[must_use]
+    pub fn templated_facts(&self) -> Vec<&str> {
+        let mut paths = Vec::new();
+        for text in self.reasons() {
+            let mut rest = text;
+            while let Some(open) = rest.find("{facts.") {
+                let after = &rest[open + "{facts.".len()..];
+                let Some(close) = after.find('}') else {
+                    break;
+                };
+                paths.push(&after[..close]);
+                rest = &after[close + 1..];
+            }
+        }
+        paths
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateSpec {
@@ -711,7 +734,48 @@ impl fmt::Display for Gate {
 
 #[cfg(test)]
 mod tests {
-    use super::EVENT_NAMES;
+    use super::{ActionDef, EVENT_NAMES};
+
+    fn deny(reason: &str) -> ActionDef {
+        ActionDef::Deny {
+            reason: reason.into(),
+        }
+    }
+
+    #[test]
+    fn templated_facts_are_the_paths_after_facts_in_every_text_an_action_renders() {
+        assert_eq!(
+            deny("{facts.runtime}, then {facts.provider_error.message} twice: {facts.runtime}")
+                .templated_facts(),
+            ["runtime", "provider_error.message", "runtime"]
+        );
+        let twice = ActionDef::DenyOnceThenWarn {
+            first_reason: "a {facts.context_ratio}".into(),
+            second_reason: "b {facts.session_id}".into(),
+        };
+        assert_eq!(twice.templated_facts(), ["context_ratio", "session_id"]);
+        let typed = ActionDef::RuntimeCommand {
+            command: "/compact".into(),
+            arguments: Some("for {facts.session_id}".into()),
+        };
+        assert_eq!(typed.templated_facts(), ["session_id"]);
+    }
+
+    #[test]
+    fn templated_facts_ignore_what_is_not_a_closed_fact_placeholder() {
+        let none = Vec::<&str>::new();
+        assert_eq!(
+            deny("no placeholders, {gate} and {tool}").templated_facts(),
+            none
+        );
+        assert_eq!(deny("an unclosed {facts.runtime").templated_facts(), none);
+        assert_eq!(ActionDef::Allow.templated_facts(), none);
+        let bare = ActionDef::RuntimeCommand {
+            command: "/compact".into(),
+            arguments: None,
+        };
+        assert_eq!(bare.templated_facts(), none);
+    }
 
     /// The README's events table, as the event names in its first column.
     fn documented_events() -> Vec<String> {

@@ -39,23 +39,34 @@ const TAIL_START: u64 = 256 * 1024;
 /// unbounded megabytes. Past the cap the fact is absent, never guessed.
 const TAIL_MAX: u64 = 8 * 1024 * 1024;
 
-/// Adds every referenced fact to `req.raw["facts"]`.
-pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) {
-    // The full path after `facts.` is kept, so `env.<NAME>` names the one
-    // variable it reads; the single-segment facts match their own arms below.
+/// The facts the gates that apply to this event name, by the path after
+/// `facts.` (`env.<NAME>` names the one variable it reads; the single-segment
+/// facts match their own arms in [`enrich`]). A gate names a fact by matching
+/// on it, by latching on it, or by templating it into a reason or an argument:
+/// the latch watches a field of the payload too, and a templated fact the
+/// gate does not collect renders `(unknown)`. A templated `facts.env.*` is
+/// never rendered, so it collects nothing.
+fn wanted_facts(set: &PolicySet, req: &EngineRequest) -> BTreeSet<String> {
     let mut wanted: BTreeSet<String> = set
         .gates
         .iter()
         .filter(|g| g.applies_to(&req.event, req.tool_name.as_deref()))
-        // A gate's latch watches a field of the payload too, and the gate
-        // cannot watch the fact without it being there to be read.
         .flat_map(|g| {
-            g.matcher
+            let named = g
+                .matcher
                 .fields()
                 .chain(g.state.as_ref().and_then(|s| s.field.as_deref()))
+                .filter_map(|f| f.strip_prefix("facts."));
+            let templated = g
+                .action
+                .templated_facts()
+                .into_iter()
+                .filter(|path| !path.starts_with("env."));
+            named
+                .chain(templated)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
         })
-        .filter_map(|f| f.strip_prefix("facts."))
-        .map(str::to_string)
         .collect();
     // The ratio is read from the two facts it divides: a gate that names it
     // asks for both, whichever of the three it matches on.
@@ -63,6 +74,12 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
         wanted.insert("context_tokens".into());
         wanted.insert("context_window".into());
     }
+    wanted
+}
+
+/// Adds every referenced fact to `req.raw["facts"]`.
+pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) {
+    let wanted = wanted_facts(set, req);
     if wanted.is_empty() {
         return;
     }

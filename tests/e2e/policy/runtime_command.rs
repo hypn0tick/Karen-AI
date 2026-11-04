@@ -730,3 +730,28 @@ runtime_commands = [\"/compact\"]",
     );
     assert!(runtime_lines(&env).is_empty(), "and files nothing");
 }
+
+#[test]
+#[serial]
+fn karen_collects_a_fact_only_the_arguments_name() {
+    // The gate's match names no fact; its arguments template one. The fact is
+    // collected for the rendering, so the line handed back carries it.
+    const BARE_GATE: &str = r#"{
+  "id": "bare-compact",
+  "description": "A gate whose only mention of a fact is in its arguments.",
+  "event": "PreToolUse",
+  "match": { "all": [ { "type": "always" } ] },
+  "action": { "type": "runtime_command", "command": "/compact", "arguments": "for {facts.session_id}" }
+}"#;
+    let env = user_env(ALLOW_COMPACT, &[("bare.json", BARE_GATE.to_string())]);
+    let (code, stdout, _stderr) = env.run_hook(
+        &bridge_pretool("rc-30", &json!(["opencode-native"])),
+        &["--runtime", "opencode"],
+    );
+    assert_exit_code(code, 0);
+    let out: Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
+    assert_eq!(
+        out["karenRuntimeCommands"][0]["arguments"], "for rc-30",
+        "{out}"
+    );
+}

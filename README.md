@@ -328,7 +328,7 @@ Back to facts that gate existence rather than occupancy: a gate that should only
 
 A `notify` reason lands in the session as a notice and as one JSON line — `time`, `session`, `gate`, `text` — in `<Karen home>/logs/karen-notify.jsonl`, rotated to `.jsonl.1` past 10 MiB. An orchestrator tails the log; the agent sees the notice; the call proceeds. `karen evaluate` rehearses a notify without filing the line.
 
-Reasons render `{gate}`, `{tool}`, `{command}`, and `{facts.<path>}`: the rendered fact from the enriched request — a string as itself, anything else as its compact JSON, an absent fact as `(unknown)`, never the empty string that reads like a value. The one fact never rendered is `facts.env.*`: the allowlist granted a match, not a broadcast into reasons, notices and the log, so the placeholder stays literal — and `karen validate` names a reason that templates one.
+Reasons render `{gate}`, `{tool}`, `{command}`, and `{facts.<path>}`: the rendered fact from the enriched request — a string as itself, anything else as its compact JSON, an absent fact as `(unknown)`, never the empty string that reads like a value. A fact a reason templates is collected like one a matcher names, so a gate that only says a fact aloud still has it to say. The one fact never rendered is `facts.env.*`: the allowlist granted a match, not a broadcast into reasons, notices and the log, so the placeholder stays literal — and `karen validate` names a reason that templates one.
 
 ### Runtime commands
 
@@ -623,7 +623,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-326 tests passing (45 unit, 20 integration, 261 e2e — zero ignored). The Karen
+330 tests passing (47 unit, 20 integration, 263 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

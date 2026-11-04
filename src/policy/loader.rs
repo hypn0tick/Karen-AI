@@ -992,10 +992,8 @@ fn warn_unknown_facts(gates: &[Gate], issues: &mut Vec<MergeIssue>) {
                 note(fact_head(rest));
             }
         }
-        for text in gate.action.reasons() {
-            for piece in text.split("{facts.").skip(1) {
-                note(fact_head(piece));
-            }
+        for path in gate.action.templated_facts() {
+            note(fact_head(path));
         }
         if !unknown.is_empty() {
             issues.push(MergeIssue {

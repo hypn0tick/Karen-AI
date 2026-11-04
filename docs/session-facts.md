@@ -4,7 +4,7 @@ A gate can read what the session's runtime actually has — how full its window 
 
 The one rule under all of it: **a fact she cannot read is absent, never zero and never empty.** A numeric matcher (`field_gte`, `field_lte`) on an absent fact does not match, a `field_equals` on one does not match, and a reason templating one renders `(unknown)`. A gate on a fact is quiet where the fact is missing, which is the correct thing for it to be.
 
-She collects a fact only when a gate that applies to the current event names it, so a policy with no facts gates pays nothing for any of this.
+She collects a fact only when a gate that applies to the current event names it — in a matcher, in a latch's `field`, or as a `{facts.<path>}` placeholder in a reason or a `runtime_command`'s arguments — so a policy with no facts gates pays nothing for any of this.
 
 ## Where each fact comes from
 
