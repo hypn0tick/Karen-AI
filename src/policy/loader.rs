@@ -1,5 +1,6 @@
 //! Loads your rules from disk. She compiles regex once, then brings them up forever. The Karen who does the work once.
 
+use crate::engine::facts::FACT_NAMES;
 use crate::policy::gate::{CompileError, Gate, GateDef, Layer, Track};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -742,6 +743,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
     gates.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
     warn_off_allowlist(&gates, &user_env, &mut issues);
     warn_key_fields(&gates, &mut issues);
+    warn_unknown_facts(&gates, &mut issues);
     // Each layer's sections deserialized alone; a merge that still does not
     // keeps the defaults rather than dropping a single gate.
     let mut config = config_from(&table, &primary).unwrap_or_else(|error| {
@@ -836,6 +838,57 @@ fn warn_off_allowlist(gates: &[Gate], user_env: &[String], issues: &mut Vec<Merg
                     "`{}` templates {} in a reason — env facts never render; the placeholder stays literal",
                     gate.id,
                     templated.join(", ")
+                ),
+                kind: IssueKind::Warning,
+            });
+        }
+    }
+}
+
+/// The fact a path or a placeholder names, up to its first dot: `facts.env.HOME`
+/// and `facts.env` both name `env`.
+fn fact_head(after_prefix: &str) -> &str {
+    after_prefix
+        .split(['.', '}'])
+        .next()
+        .unwrap_or(after_prefix)
+}
+
+/// A gate that names `facts.context_ration` asks for a fact nobody supplies:
+/// it never matches, a reason shows `(unknown)`, and nothing says why. She
+/// checks every name a gate reads against the facts she has. A gate switched
+/// off reads nothing and is left be.
+fn warn_unknown_facts(gates: &[Gate], issues: &mut Vec<MergeIssue>) {
+    for gate in gates.iter().filter(|gate| gate.enabled) {
+        let mut unknown: Vec<String> = Vec::new();
+        let mut note = |head: &str| {
+            let full = format!("facts.{head}");
+            if !FACT_NAMES.contains(&head) && !unknown.contains(&full) {
+                unknown.push(full);
+            }
+        };
+        for field in gate
+            .matcher
+            .fields()
+            .chain(gate.state.as_ref().and_then(|s| s.field.as_deref()))
+        {
+            if let Some(rest) = field.strip_prefix("facts.") {
+                note(fact_head(rest));
+            }
+        }
+        for text in gate.action.reasons() {
+            for piece in text.split("{facts.").skip(1) {
+                note(fact_head(piece));
+            }
+        }
+        if !unknown.is_empty() {
+            issues.push(MergeIssue {
+                layer: gate.layer,
+                message: format!(
+                    "`{}` names {}, which is not a fact she has (known: {}) — it can never match",
+                    gate.id,
+                    unknown.join(", "),
+                    FACT_NAMES.join(", ")
                 ),
                 kind: IssueKind::Warning,
             });

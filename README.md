@@ -253,7 +253,7 @@ Where each fact comes from for each runtime, when it is absent, which source win
 
 `runtime`, `mcp_servers` and `tools` are cached for the session; `git_uncommitted` and the occupancy facts are read fresh on every call that needs them. An unreadable fact is absent, never zero: a closed Codex rollout is zstd and she does not decompress it, a missing transcript says nothing, and a gate matching a numeric condition on an absent fact stays quiet. The same goes for a transcript whose last usage line sits more than 8 MiB from the end: she stops reading there, the occupancy facts are absent, and a gate on them stays quiet on that transcript rather than guessing from an older line.
 
-The env allowlist is the user layer's and no other's: a project layer that sets `[facts] env` is ignored, because a merge that unions the lists would let repository content expose a variable the user never named — `karen validate` names the layer that tried. A gate matching `facts.env.<NAME>` off the allowlist can never fire; `karen validate` names that gate too. A payload's own `facts.env` never reaches a gate, an unset variable reads as absent (never the empty string), and a value is never logged or written to state — it exists only in the request the gate reads.
+The env allowlist is the user layer's and no other's: a project layer that sets `[facts] env` is ignored, because a merge that unions the lists would let repository content expose a variable the user never named — `karen validate` names the layer that tried. A gate matching `facts.env.<NAME>` off the allowlist can never fire; `karen validate` names that gate too, and any enabled gate that names a fact she does not have (a typo like `facts.context_ration`). A payload's own `facts.env` never reaches a gate, an unset variable reads as absent (never the empty string), and a value is never logged or written to state — it exists only in the request the gate reads.
 
 A gate can also ask which session it is judging. Start each agent with a variable that names it (`HCOM_INSTANCE=luna`), allowlist the variable's name in your own `~/.karen/policies/config.toml`, and a gate matches on `facts.env.HCOM_INSTANCE` — here, a fleet of lanes that may not `git push` except the one orchestrator:
 
@@ -589,7 +589,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-285 tests passing (41 unit, 20 integration, 224 e2e — zero ignored). The Karen
+286 tests passing (41 unit, 20 integration, 225 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

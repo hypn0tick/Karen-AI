@@ -378,3 +378,68 @@ fn karen_validate_stays_quiet_about_a_disabled_gates_env_reads() {
         "a disabled gate is not named: {asleep:?}"
     );
 }
+
+#[test]
+#[serial]
+fn karen_validate_names_a_misspelt_fact_and_leaves_the_real_ones_alone() {
+    // `facts.context_ration` matches nothing, forever, and says nothing about
+    // it: a typo in a fact name is a gate that never fires. She names it, in a
+    // matcher, a latch field and a reason, and stays quiet about the real ones.
+    const TYPOS: &str = r#"{ "gates": [
+  { "id": "typo-in-matcher", "event": "Stop",
+    "match": { "all": [ { "type": "field_gte", "field": "facts.context_ration", "value": 0.5 } ] },
+    "action": { "type": "deny", "reason": "full" } },
+  { "id": "typo-in-reason", "event": "Stop",
+    "match": { "all": [ { "type": "field_gte", "field": "facts.context_ratio", "value": 0.5 } ] },
+    "action": { "type": "deny", "reason": "at {facts.contxt_tokens} tokens" } },
+  { "id": "typo-in-latch", "event": "Stop",
+    "match": { "all": [ { "type": "always" } ] },
+    "action": { "type": "deny", "reason": "once" },
+    "state": { "track": "session", "key": "k", "field": "facts.provider_eror", "rearm_below": 1 } },
+  { "id": "typo-asleep", "event": "Stop", "enabled": false,
+    "match": { "all": [ { "type": "field_gte", "field": "facts.context_rtio", "value": 0.5 } ] },
+    "action": { "type": "deny", "reason": "off duty" } },
+  { "id": "all-real", "event": "Stop",
+    "match": { "all": [
+      { "type": "field_regex", "field": "facts.provider_error.message", "pattern": "." },
+      { "type": "field_regex", "field": "facts.env.KAREN_TEST_REAL", "pattern": "." },
+      { "type": "field_regex", "field": "facts.git_uncommitted", "pattern": "." } ] },
+    "action": { "type": "deny", "reason": "{facts.runtime} says no" } }
+] }"#;
+    let env = TestEnv::with_config(
+        crate::e2e::common::DEFAULT_CONFIG,
+        &[GateFixture {
+            file: "typos.json",
+            content: TYPOS,
+        }],
+        &[],
+    );
+    user_layer("[\"KAREN_TEST_REAL\"]", &env.home_dir);
+    let (code, stdout, _stderr) = env.run_karen(&["validate", "--json"]);
+    assert_exit_code(code, 0);
+    let data = assert_json_ok(&stdout);
+    let messages: Vec<&str> = data["issues"]
+        .as_array()
+        .expect("issues array")
+        .iter()
+        .filter_map(|i| i["message"].as_str())
+        .collect();
+    for (gate, typo) in [
+        ("typo-in-matcher", "facts.context_ration"),
+        ("typo-in-reason", "facts.contxt_tokens"),
+        ("typo-in-latch", "facts.provider_eror"),
+    ] {
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains(&format!("`{gate}`")) && m.contains(typo)),
+            "validate names {typo} in {gate}: {messages:?}"
+        );
+    }
+    assert!(
+        messages
+            .iter()
+            .all(|m| !m.contains("typo-asleep") && !m.contains("all-real")),
+        "a disabled gate and a gate of real facts get no word: {messages:?}"
+    );
+}

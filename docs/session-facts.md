@@ -54,7 +54,7 @@ The shipped version is [`examples/gates/compress-finished-work.json`](../example
 
 A gate that never fires on a fact is almost always one of four things. In the order worth checking:
 
-1. **`karen validate`.** It names a gate matching `facts.env.<NAME>` for a variable the user layer never allowlisted ("the fact stays absent"), a project layer that tried to allowlist one, and a reason templating `{facts.env.NAME}` (env facts match; they never render).
+1. **`karen validate`.** It names a gate matching `facts.env.<NAME>` for a variable the user layer never allowlisted ("the fact stays absent"), a project layer that tried to allowlist one, and a reason templating `{facts.env.NAME}` (env facts match; they never render). It also names an enabled gate that reads a `facts.<name>` she does not have — a matcher, a latch field or a reason that says `facts.context_ration` — because a misspelt fact is a gate that never fires and never says so. A disabled gate reads nothing, so none of these warnings apply to it.
 2. **Is the fact there at all?** Feed `karen evaluate` the payload and look at the verdict: `data.fired_policies` names every gate that fired.
 
    ```bash
