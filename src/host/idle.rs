@@ -41,11 +41,15 @@ static COMPOSER: LazyLock<Regex> = LazyLock::new(|| {
         .expect("the composer pattern is valid")
 });
 
-/// A running spinner: an ellipsis, then a parenthesised timer that opens on a duration
-/// (`Calculating… (46m 18s · ↓ 139.5k tokens`, `Thinking… (12s · esc to interrupt)`). A finished
-/// turn's summary (`Baked for 57s · done`) has neither the ellipsis nor the bracket.
+/// A running spinner. Either an ellipsis and a parenthesised timer that opens on a duration
+/// (`Calculating… (46m 18s · ↓ 139.5k tokens`, `Thinking… (12s · esc to interrupt)`), or a spinner
+/// glyph, one word and an ellipsis at the start of the row, which is how Claude Code draws a turn
+/// before its timer appears and while hooks run (`* Crunching…`, `· Crunching…`,
+/// `* Crunching… (running UserPromptSubmit hooks… 3/4 · 0s)`, recorded under `karen run`). A
+/// finished turn's summary (`✻ Baked for 57s · done`) has no ellipsis.
 static TURN_TIMER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:…|\.\.\.) \(\d+[hms]\b").expect("the turn timer pattern is valid")
+    Regex::new(r"(?:…|\.\.\.) \(\d+[hms]\b|^\s*[·✢*✶✻✽✳]\s+\p{L}+(?:…|\.\.\.)")
+        .expect("the turn timer pattern is valid")
 });
 
 /// What differs between runtimes: how many non-blank rows may sit under the composer (rules, a
@@ -320,6 +324,11 @@ mod tests {
             "* Calculating… (46m 18s · ↓ 139.5k tokens · thought for 6s)",
             "✻ Thinking… (12s)",
             "✶ Working... (3m 2s · ↑ 1.2k tokens)",
+            // Recorded under `karen run` (2026-11-04): before the timer appears and while hooks run.
+            "* Crunching… (running UserPromptSubmit hooks… 3/4 · 0s)",
+            "* Crunching…",
+            "· Crunching…",
+            "✢ Jitterbugging… (9s · ↓ 53 tokens · thinking with low effort)",
         ] {
             let text = CLAUDE_IDLE.replace("✻ Baked for 57s · done", spinner);
             assert_eq!(
