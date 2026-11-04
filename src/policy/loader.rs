@@ -857,6 +857,8 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
     warn_off_allowlist(&gates, &user.env, &mut issues);
     warn_key_fields(&gates, &mut issues);
     warn_unknown_facts(&gates, &mut issues);
+    #[cfg(not(feature = "host"))]
+    warn_screen_without_host(&gates, &mut issues);
     warn_runtime_commands(&gates, &actions, &mut issues);
     // Each layer's sections deserialized alone; a merge that still does not
     // keeps the defaults rather than dropping a single gate.
@@ -1056,24 +1058,55 @@ fn warn_off_allowlist(gates: &[Gate], user_env: &[String], issues: &mut Vec<Merg
                 kind: IssueKind::Warning,
             });
         }
-        let templated: Vec<String> = gate
-            .action
-            .reasons()
-            .into_iter()
-            .filter_map(|text| {
-                let at = text.find("{facts.env.")?;
-                let rest = &text[at..];
-                let end = rest.find('}')? + 1;
-                Some(rest[..end].to_string())
-            })
-            .collect();
+        // Env and screen facts match; they never render. Every placeholder of either kind a reason
+        // or an argument carries is named once.
+        let mut templated: Vec<String> = Vec::new();
+        for text in gate.action.reasons() {
+            for prefix in ["{facts.env.", "{facts.screen."] {
+                let mut rest = text;
+                while let Some(at) = rest.find(prefix) {
+                    rest = &rest[at..];
+                    let Some(end) = rest.find('}') else {
+                        break;
+                    };
+                    let placeholder = rest[..=end].to_string();
+                    if !templated.contains(&placeholder) {
+                        templated.push(placeholder);
+                    }
+                    rest = &rest[end + 1..];
+                }
+            }
+        }
         if !templated.is_empty() {
             issues.push(MergeIssue {
                 layer: gate.layer,
                 message: format!(
-                    "`{}` templates {} in a reason or an argument — env facts never render; the placeholder stays literal",
+                    "`{}` templates {} in a reason or an argument — env and screen facts never render; the placeholder stays literal",
                     gate.id,
                     templated.join(", ")
+                ),
+                kind: IssueKind::Warning,
+            });
+        }
+    }
+}
+
+/// A build without the terminal host cannot read a screen: a gate naming `facts.screen.*` would
+/// never see the fact. Said at the door, as every other gate that can never fire is.
+#[cfg(not(feature = "host"))]
+fn warn_screen_without_host(gates: &[Gate], issues: &mut Vec<MergeIssue>) {
+    for gate in gates.iter().filter(|gate| gate.enabled) {
+        let reads_screen = gate
+            .matcher
+            .fields()
+            .chain(gate.state.as_ref().and_then(|s| s.field.as_deref()))
+            .any(|field| field.starts_with("facts.screen."));
+        if reads_screen {
+            issues.push(MergeIssue {
+                layer: gate.layer,
+                message: format!(
+                    "`{}` reads facts.screen.*, which needs the terminal host — this build has none, so the fact stays absent",
+                    gate.id
                 ),
                 kind: IssueKind::Warning,
             });

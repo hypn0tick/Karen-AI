@@ -8,6 +8,8 @@
 //!   control endpoint is.
 //! * `FAKE_RUNTIME_WORK_MS`: how long the runtime is busy with a line (default 300).
 //! * `/exit` ends it with code 0, `/crash` with code 3.
+//! * `/gauge` draws a status line with a context gauge, and `/limit` a usage limit banner, above
+//!   the next prompt: what a screen shows that a transcript does not.
 //!
 //! Build and run through `cargo run --example fake-runtime`; `karen run` hosts it like any other.
 
@@ -56,6 +58,14 @@ fn main() {
         match heard.as_str() {
             "/exit" => return,
             "/crash" => std::process::exit(3),
+            "/gauge" => {
+                say("\r\n  Context ███████░░░ 67%\r\n> ");
+                continue;
+            }
+            "/limit" => {
+                say("\r\nClaude usage limit reached. Your limit will reset at 3pm.\r\n> ");
+                continue;
+            }
             _ => {}
         }
         say("\r\nworking...");

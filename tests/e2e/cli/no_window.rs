@@ -71,7 +71,13 @@ fn karen_has_no_command_new_outside_the_one_that_hides_the_window() {
 #[test]
 fn karen_decides_idle_without_starting_a_process() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/host");
-    for module in ["delivery.rs", "idle.rs", "terminal.rs", "endpoint.rs"] {
+    for module in [
+        "delivery.rs",
+        "idle.rs",
+        "terminal.rs",
+        "endpoint.rs",
+        "screen.rs",
+    ] {
         let text = std::fs::read_to_string(root.join(module)).expect("source is readable");
         for forbidden in ["proc::", "std::process", "Command"] {
             assert!(

@@ -407,7 +407,7 @@ pub(crate) fn expand_facts(template: &str, req: &EngineRequest) -> String {
             break;
         };
         let path = &out[open + "{facts.".len()..open + close];
-        let rendered = if path.starts_with("env.") {
+        let rendered = if path.starts_with("env.") || path.starts_with("screen.") {
             // Not "(unknown)": the literal text, so the author sees their own
             // placeholder refused in place. The search moves past it — the
             // literal would otherwise be found and refused again, forever.

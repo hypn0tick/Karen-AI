@@ -20,6 +20,21 @@ She collects a fact only when a gate that applies to the current event names it 
 | `facts.context_ratio` | `context_tokens` over `context_window` | the same | the same | either side is absent, or the window is `0` |
 | `facts.provider_error` | the transcript's last `isApiErrorMessage` entry | the rollout's last `error` event | the bridge caches `session.error` and carries it into the `Stop` review and the `ProviderError` event | no error, or a later assistant entry got through (the failure is stale and she drops it) |
 | `facts.env.<NAME>` | her own environment, for names the **user layer's** `[facts] env` allowlists | the same | the same | the name is not allowlisted, or the variable is unset (an empty value is still a value) |
+| `facts.screen.<field>` | what the terminal host shows on its screen, when the session runs under `karen run claude` | `karen run codex` | `karen run opencode` | the session is not hosted for this runtime, the host does not answer within 3 seconds, the screen does not show the field, or the build has no terminal host (`--no-default-features`) |
+
+The fields after `facts.screen.`, each absent unless the screen shows it:
+
+| Field | Type | Read from |
+|-------|------|-----------|
+| `text` | string | the whole visible screen. **For `field_regex` only**: it is the conversation as it stands, which can hold anything |
+| `prompt_empty` | bool | the composer row, found the way delivery finds it: `true` for an empty prompt, `false` for one with text typed in it |
+| `turn_running` | bool | the runtime's own "esc to interrupt" line near the prompt; absent for a runtime with no known marker |
+| `context_used_percent` | number | a bar-style gauge in a status line, `Context ███████░░░ 67%`; "Context left until auto-compact: 7%" is the amount left and is not read |
+| `usage_limit` | `true` | a usage or rate limit banner among the last 15 non-blank rows; never `false`, because no banner seen is not a fact about the runtime |
+
+The structured sources come first: a number the transcript or the rollout carries is read from there, and the screen is for what never reaches them. `facts.screen` is never a payload fact, so nothing a bridge hands her can pose as what the terminal host saw. Screen text is matched and never shown: a reason or an argument that says `{facts.screen.text}` keeps the placeholder as written (the same rule as `facts.env`), nothing writes it to a log, and nothing caches it in the state store. `karen validate` names a reason that templates one, and in a build with no terminal host, a gate that reads one.
+
+How far to trust each extractor: the composer and turn rules are checked against screens recorded from a live OpenCode hosted by `karen run` (first screen, typed, mid-turn, after a turn), a live Claude Code screen at rest (read-only, scrubbed) and the fake runtime's, which the tests record through `karen run`; Codex has no recording. The gauges are checked against the Claude Code status line (`Context ███████░░░ 67%`) and OpenCode's status row (`8.2K (4%)`). The usage-limit pattern follows how the runtimes word their limit notices and has not yet been checked against a banner recorded from one, so treat `usage_limit` as provisional.
 
 `runtime`, `mcp_servers` and `tools` are cached for the session in the state store; everything else is read fresh on every call that needs it.
 
@@ -31,7 +46,7 @@ For any one fact, the first of these that has it:
 2. **What she can read herself:** the transcript or rollout, the runtime's config files, `PATH`, `git`.
 3. **The config:** `[facts.context_window]`, for the window alone, keyed by runtime name, so one runtime's number never answers for another's model.
 
-Two exceptions to "the payload wins". `facts.env` is never a payload fact: the allowlist over her own environment is its only source, so nothing a bridge hands her can reach a gate as a variable the user never named. And the allowlist is the **user layer's** alone (`~/.karen/policies/config.toml`): a project layer that sets `[facts] env` is ignored, and `karen validate` names the layer that tried.
+Two facts are exceptions to "the payload wins". `facts.screen` is never a payload fact: only the terminal host the session runs under can say what is on its screen. And `facts.env` is never a payload fact either: the allowlist over her own environment is its only source, so nothing a bridge hands her can reach a gate as a variable the user never named. And the allowlist is the **user layer's** alone (`~/.karen/policies/config.toml`): a project layer that sets `[facts] env` is ignored, and `karen validate` names the layer that tried.
 
 ## A latch over time
 

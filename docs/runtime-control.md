@@ -137,7 +137,7 @@ Everything after the runtime goes to the runtime untouched. `<runtime>` is any p
 
 `type` types whatever the runtime is doing: it is the primitive, and nothing in a gate's path uses it. `deliver` is the one a gate's `runtime_command` reaches, and it waits for the session.
 
-Screen text is the host's data: it is never logged and never rendered into a gate's text.
+Screen text is the host's data: it is never logged and never rendered into a gate's text. A gate can still match on it: `facts.screen.text` for a `field_regex`, and the named fields `prompt_empty`, `turn_running`, `context_used_percent` and `usage_limit`, which read the host's screen through the `screen` request each time a hook asks for one (see [`session-facts.md`](session-facts.md)).
 
 **Delivery: waiting for an idle session.** `deliver` takes the line and answers at once, because the `karen hook` process that asked is about to exit and must not hold up a tool call. The host keeps the line in a queue (first in, first out, at most 16) and types it when the session is idle, one per idle. Idle means three things at once:
 
@@ -147,7 +147,16 @@ Screen text is the host's data: it is never logged and never rendered into a gat
 
 Nothing is guessed in the idle direction: a screen with no prompt she recognises is busy, so a wrong rule makes a command time out and say so, and never types into a turn. A line that waits `timeout_secs` (120 by default) is given up on as `undelivered:timeout` and never typed. When the runtime exits with lines still waiting, each is filed `undelivered:host-exited`. The host files all of these itself, in the runtime log, with `layer` `terminal-host`, `route` `karen run`, `status` and `waited_ms`, and it keeps the arguments as the gate wrote them, as the rest of the log does.
 
-The prompt rules are provisional for the three real runtimes: Claude Code's comes from one recorded screen, Codex's and OpenCode's from how those tools describe themselves, and any other program gets the plain rule (a `>` prompt on the last row). A dim suggestion sitting in an otherwise empty prompt reads as typed text, so it counts as busy: the command times out rather than risk it. Nothing here was checked against a live agent, because no test types into one; the install check on a throwaway `karen run claude` session is what settles it.
+How far the prompt rules are checked, runtime by runtime:
+
+- **OpenCode**: recorded from a live `opencode` (a free model, in a throwaway home) hosted by `karen run`: the first screen, two characters typed, mid-turn and after a turn (`tests/fixtures/screens/opencode-*.txt`). Its composer is not a `>` row but a box of `┃` rows closed by a `╹▀▀▀` rule, with a placeholder hint ("Ask anything…") on a fresh session, and its turn marker is `esc interrupt`. Delivery was tried against that live session too: with two lines queued back to back, the first was typed at once (169 ms) and the second waited 7.4 s, through the first turn, and was typed only after OpenCode went idle; both were submitted and answered.
+- **Claude Code**: one screen at rest, recorded read-only from a live session (`claude-idle.txt`). The mid-turn and half-typed screens are not recorded, so those two rules follow how Claude Code describes itself.
+- **Codex**: no recording; the rules follow how Codex describes itself. This is the least checked.
+- **Any other program** gets the plain rule (a `>` prompt on the last row), which the fake runtime's recorded screens check.
+
+A dim suggestion sitting in an otherwise empty prompt reads as typed text for Claude Code and Codex, so it counts as busy: the command times out rather than risk it. OpenCode's own hint is recognised and is not typed text.
+
+**Recording a screen yourself.** `cargo run --example record-screens -- --runtime <name> --out DIR -- <program> [args]` hosts any program under `karen run` in a throwaway home (so it starts with none of your configuration; `--env KEY=VALUE` passes it what it needs), types two characters, submits a prompt, and saves the idle, half-typed, mid-turn and after-turn screens and every distinct screen in between. `--deliver` sends the prompt and a second one through the host's queue instead and prints what the host filed. Read the screens before keeping any: a path, a name or an account can be on them.
 
 **Hook side.** The host never decides what may be typed. The hook that calls it has already applied every rule above (user layer, allowlist, one printable line) and only then opens the endpoint, and a test pins that a refused attempt sends the endpoint nothing. The host is reached only when the hook's own environment names one (`KAREN_HOST_ENDPOINT` and `KAREN_HOST_TOKEN`) and `KAREN_HOST_RUNTIME` equals the session's runtime, so a Claude Code hook running under a hosted Codex does not type into Codex. `karen run --as claude ./wrapper.sh` records a program under the runtime's name when its file name is not it.
 

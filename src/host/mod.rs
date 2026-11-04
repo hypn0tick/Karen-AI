@@ -15,6 +15,7 @@ pub mod delivery;
 pub mod endpoint;
 pub mod idle;
 pub mod program;
+pub mod screen;
 pub mod session;
 pub mod terminal;
 

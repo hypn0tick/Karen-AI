@@ -250,6 +250,7 @@ A gate can read what the session's runtime actually has instead of someone remem
 | `facts.context_ratio` | `context_tokens` over `context_window` | both of the above; **absent when either side is** |
 | `facts.session_id` | the session's own id, as the payload said it | the payload itself; absent when the payload carries none |
 | `facts.env.<NAME>` | the environment variable's value, read from Karen's own environment | **only** the names the user layer allowlisted in `[facts] env` (`~/.karen/policies/config.toml`) |
+| `facts.screen.<field>` | what the terminal host shows on its screen: `text` (for `field_regex` only), `prompt_empty`, `turn_running`, `context_used_percent`, `usage_limit` | only a session started with `karen run <runtime>`; each field is absent unless the screen shows it, and the screen is never a payload fact. Screen text is matched and never rendered or logged |
 | `facts.provider_error` | the provider's own last failure: an object carrying `message` (and Claude Code's `model`, as the entry carries it) | Claude Code: the transcript's last `isApiErrorMessage` entry; Codex: the rollout's last `error` event (`event_msg`/`error`, per the codex-rs source — `codex-rs/protocol/src/protocol.rs`, openai/codex @ ac4332c); OpenCode: the bridge caches `session.error` and carries it into the Stop review. **Absent when a later assistant entry succeeds** — a stale apology is not a fact |
 
 Where each fact comes from for each runtime, when it is absent, which source wins, and how to find out why a facts gate is silent: [`docs/session-facts.md`](docs/session-facts.md).
@@ -331,7 +332,7 @@ Back to facts that gate existence rather than occupancy: a gate that should only
 
 A `notify` reason lands in the session as a notice and as one JSON line — `time`, `session`, `gate`, `text` — in `<Karen home>/logs/karen-notify.jsonl`, rotated to `.jsonl.1` past 10 MiB. An orchestrator tails the log; the agent sees the notice; the call proceeds. `karen evaluate` rehearses a notify without filing the line.
 
-Reasons render `{gate}`, `{tool}`, `{command}`, and `{facts.<path>}`: the rendered fact from the enriched request — a string as itself, anything else as its compact JSON, an absent fact as `(unknown)`, never the empty string that reads like a value. A fact a reason templates is collected like one a matcher names, so a gate that only says a fact aloud still has it to say. The one fact never rendered is `facts.env.*`: the allowlist granted a match, not a broadcast into reasons, notices and the log, so the placeholder stays literal — and `karen validate` names a reason that templates one.
+Reasons render `{gate}`, `{tool}`, `{command}`, and `{facts.<path>}`: the rendered fact from the enriched request — a string as itself, anything else as its compact JSON, an absent fact as `(unknown)`, never the empty string that reads like a value. A fact a reason templates is collected like one a matcher names, so a gate that only says a fact aloud still has it to say. The facts never rendered are `facts.env.*` and `facts.screen.*`: the allowlist granted a match, not a broadcast into reasons, notices and the log, and a screen is the conversation as it stands, so the placeholder stays literal — and `karen validate` names a reason that templates one.
 
 ### Runtime commands
 
@@ -628,7 +629,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-394 tests passing (84 unit, 20 integration, 290 e2e — zero ignored). The Karen
+417 tests passing (102 unit, 20 integration, 295 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---

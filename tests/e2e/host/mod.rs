@@ -19,6 +19,8 @@ use crate::e2e::common::{built_example, karen_binary_path};
 mod deliver;
 #[cfg(test)]
 mod run;
+#[cfg(test)]
+mod screens;
 
 /// How long any one wait may take. `ConPTY` is not quick to start on a busy machine.
 const PATIENCE: Duration = Duration::from_secs(20);

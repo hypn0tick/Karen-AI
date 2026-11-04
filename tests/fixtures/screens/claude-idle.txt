@@ -1,0 +1,10 @@
+● Done with the thing
+
+✻ Baked for 57s · done
+
+──────────────────────────────────────
+❯
+──────────────────────────────────────
+  [Opus 5.5] │ project git:(main*)
+  Context ███████░░░ 67% │ Usage Weekly ████████░░ 82%
+  ⏵⏵ bypass permissions on

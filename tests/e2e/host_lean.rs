@@ -15,3 +15,32 @@ fn karen_run_in_the_lean_build_says_there_is_no_terminal_host() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no terminal host"), "{stderr}");
 }
+
+#[test]
+fn karen_validate_in_the_lean_build_names_a_gate_that_reads_the_screen() {
+    use crate::e2e::common::{DEFAULT_CONFIG, GateFixture, TestEnv, assert_exit_code};
+
+    const GATE: &str = r#"{
+  "id": "reads-the-screen",
+  "description": "Reads a screen the lean build cannot see.",
+  "event": "PreToolUse",
+  "match": { "all": [ { "type": "field_equals", "field": "facts.screen.usage_limit", "value": true } ] },
+  "action": { "type": "deny", "reason": "limit" }
+}"#;
+    let env = TestEnv::with_config(
+        DEFAULT_CONFIG,
+        &[GateFixture {
+            file: "reads-the-screen.json",
+            content: GATE,
+        }],
+        &[],
+    );
+
+    let (code, stdout, _stderr) = env.run_karen(&["validate", "--json"]);
+
+    assert_exit_code(code, 0);
+    assert!(
+        stdout.contains("`reads-the-screen` reads facts.screen.*, which needs the terminal host"),
+        "{stdout}"
+    );
+}

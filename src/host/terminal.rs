@@ -98,8 +98,15 @@ impl Terminal {
         let screen = self.parser.screen();
         let (rows, cols) = screen.size();
         let (cursor_row, cursor_col) = screen.cursor_position();
+        // Row by row. `contents()` joins a row to the next one when the program filled it to the
+        // last column, and a full-screen UI that paints every row edge to edge would come out as
+        // one long line.
+        let mut lines: Vec<String> = screen.rows(0, cols.get()).collect();
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
         ScreenDump {
-            text: screen.contents(),
+            text: lines.join("\n"),
             rows: rows.get(),
             cols: cols.get(),
             cursor_row,
@@ -157,6 +164,13 @@ mod tests {
         assert_eq!((dump.rows, dump.cols), (5, 40));
         assert_eq!((dump.cursor_row, dump.cursor_col), (1, 2));
         assert!(!dump.alternate);
+    }
+
+    #[test]
+    fn terminal_keeps_a_row_filled_to_the_last_column_apart_from_the_next() {
+        let mut term = Terminal::new(4, 10);
+        term.feed(b"0123456789\x1b[2;1Habc");
+        assert_eq!(term.dump().text, "0123456789\nabc");
     }
 
     #[test]

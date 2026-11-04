@@ -24,6 +24,7 @@ pub const FACT_NAMES: &[&str] = &[
     "context_ratio",
     "provider_error",
     "env",
+    "screen",
 ];
 
 /// Facts stable for a session, cached in the state store under `facts.<name>`.
@@ -60,7 +61,7 @@ fn wanted_facts(set: &PolicySet, req: &EngineRequest) -> BTreeSet<String> {
                 .action
                 .templated_facts()
                 .into_iter()
-                .filter(|path| !path.starts_with("env."));
+                .filter(|path| !path.starts_with("env.") && !path.starts_with("screen."));
             named
                 .chain(templated)
                 .map(str::to_string)
@@ -92,10 +93,18 @@ pub fn enrich(set: &PolicySet, state: &dyn StateStore, req: &mut EngineRequest) 
     // its only source, so nothing a bridge hands her can reach a gate as a
     // variable the user never named.
     facts.remove("env");
+    // Nor is `screen`: only the terminal host the session runs under can say what is on its screen,
+    // so nothing a bridge hands her can pose as it.
+    facts.remove("screen");
     let runtime = runtime(&req.raw);
     let env = env_facts(set, &wanted);
     if !env.is_empty() {
         facts.insert("env".into(), Value::Object(env));
+    }
+    if let Some(screen) = screen_facts(&runtime, &wanted) {
+        if !screen.is_empty() {
+            facts.insert("screen".into(), Value::Object(screen));
+        }
     }
     // The occupancy of the latest turn, read once for both facts that share
     // it. Only Claude Code and Codex record it in a transcript she can read; a
@@ -192,6 +201,29 @@ fn configured_window(set: &PolicySet, runtime: &str) -> Option<u64> {
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(runtime))
         .map(|(_, window)| *window)
+}
+
+/// `facts.screen`: what the terminal host this session runs under shows on its screen, for the
+/// fields a gate names. Absent when the session is not hosted by `karen run` for this runtime, when
+/// the host does not answer, or in a build without a terminal host. Never cached and never
+/// logged: the screen is the conversation as it is now.
+#[cfg(feature = "host")]
+fn screen_facts(runtime: &str, wanted: &BTreeSet<String>) -> Option<Map<String, Value>> {
+    let names: BTreeSet<&str> = wanted
+        .iter()
+        .filter_map(|fact| fact.strip_prefix("screen."))
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let target = crate::engine::runtime_command::host_for(runtime)?;
+    let screen = crate::host::screen::fetch(&target)?;
+    Some(crate::host::screen::extract(runtime, &screen, &names))
+}
+
+#[cfg(not(feature = "host"))]
+fn screen_facts(_runtime: &str, _wanted: &BTreeSet<String>) -> Option<Map<String, Value>> {
+    None
 }
 
 /// `facts.env`: her own environment, and only the names the user layer

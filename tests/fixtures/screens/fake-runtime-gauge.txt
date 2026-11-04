@@ -1,0 +1,5 @@
+fake-runtime ready
+> /gauge
+
+  Context ███████░░░ 67%
+>

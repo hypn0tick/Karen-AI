@@ -1,0 +1,8 @@
+fake-runtime ready
+> /gauge
+
+  Context ███████░░░ 67%
+> /limit
+
+Claude usage limit reached. Your limit will reset at 3pm.
+>

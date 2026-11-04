@@ -124,7 +124,7 @@ pub fn reach_condition(layer: &str) -> &'static str {
 /// The host a session runs under, when the environment names one for this runtime: its endpoint
 /// and token. A host for another runtime is not this session's keyboard.
 #[cfg(feature = "host")]
-fn host_for(runtime: &str) -> Option<(String, String)> {
+pub(crate) fn host_for(runtime: &str) -> Option<(String, String)> {
     let target = crate::host::endpoint::from_env()?;
     let hosted = std::env::var(crate::host::endpoint::ENV_RUNTIME).ok()?;
     (hosted == runtime).then_some(target)
