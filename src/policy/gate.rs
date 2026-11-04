@@ -181,15 +181,31 @@ pub enum ActionDef {
     Notify {
         reason: String,
     },
+    /// Type a slash command into the session, below the runtime's hook API:
+    /// delivered by the best layer the session has, and the call proceeds
+    /// whether or not one exists. User layer only, and only for a command on
+    /// the user layer's `[actions] runtime_commands` allowlist; every attempt
+    /// is written to the runtime log with the layer that carried it. The
+    /// `arguments` template renders `{gate}` and `{facts.<path>}` (never the
+    /// agent's own `{command}` or `{tool}` text, and never `facts.env.*` or
+    /// screen text). The Karen who reaches past the hook API and types it
+    /// herself, with the owner's permission in writing.
+    RuntimeCommand {
+        command: String,
+        #[serde(default)]
+        arguments: Option<String>,
+    },
 }
 
 impl ActionDef {
-    /// Every reason this action renders, whatever shape it delivers them in.
-    /// For validation that reads the text a gate will say aloud.
+    /// Every text this action renders, whatever shape it delivers them in:
+    /// the reasons a gate says aloud and the arguments a `runtime_command`
+    /// types. For validation that reads what a gate will put into the world.
     #[must_use]
     pub fn reasons(&self) -> Vec<&str> {
         match self {
             Self::Allow => Vec::new(),
+            Self::RuntimeCommand { arguments, .. } => arguments.as_deref().into_iter().collect(),
             Self::Deny { reason }
             | Self::Ask { reason }
             | Self::Notify { reason }
@@ -380,6 +396,8 @@ pub enum CompileError {
     UnknownEvent(String, String),
     #[error("gate `{gate}` has unusable state.key_fields: {reason}")]
     KeyFields { gate: String, reason: &'static str },
+    #[error("gate `{gate}` has an unusable runtime_command: {reason}")]
+    RuntimeCommand { gate: String, reason: &'static str },
 }
 
 impl Gate {
@@ -391,10 +409,19 @@ impl Gate {
     /// Returns [`CompileError::UnknownEvent`] when the gate names an event
     /// she does not recognize, and [`CompileError::KeyFields`] when its
     /// `state.key_fields` is empty or names a blank path: a list that keys on
-    /// nothing would call every input the same one.
+    /// nothing would call every input the same one. A `runtime_command` with a
+    /// blank command is refused as [`CompileError::RuntimeCommand`]: there is
+    /// nothing to type.
     pub fn compile(def: GateDef) -> Result<Self, CompileError> {
         validate_event(&def.event)
             .map_err(|()| CompileError::UnknownEvent(def.event.clone(), def.id.clone()))?;
+        if matches!(&def.action, ActionDef::RuntimeCommand { command, .. } if command.trim().is_empty())
+        {
+            return Err(CompileError::RuntimeCommand {
+                gate: def.id.clone(),
+                reason: "the command is blank",
+            });
+        }
         if let Some(fields) = def.state.as_ref().and_then(|s| s.key_fields.as_ref()) {
             let reason = if fields.is_empty() {
                 Some("the list is empty")

@@ -11,3 +11,5 @@ mod loading;
 mod matchers;
 #[cfg(test)]
 mod notify;
+#[cfg(test)]
+mod runtime_command;

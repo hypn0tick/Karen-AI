@@ -62,3 +62,17 @@ env = []
 # so without an entry `facts.context_ratio` is absent and a gate on it stays
 # quiet. The Karen who quotes a configured number, never a guessed one.
 claude = 200000
+
+# What `runtime_command` may do. Both lists are the USER layer's alone: a
+# project layer that sets either is ignored and named by `karen validate`,
+# because repository content never lends out a keyboard. Uncomment them in
+# ~/.karen/policies/config.toml, not here.
+# [actions]
+# The only commands a `runtime_command` gate may type into a session, each one
+# word beginning with `/`; the arguments belong to the gate. Empty (the default)
+# allows nothing, so a gate that types is refused until you name its command.
+# runtime_commands = ["/compact"]
+# The runtimes she may type into. Unset means all three; a session on any
+# other is refused, and `karen validate` reports which of these no layer
+# reaches. The Karen who types only where she was invited.
+# runtimes = ["claude", "codex", "opencode"]

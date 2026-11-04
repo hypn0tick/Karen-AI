@@ -519,6 +519,7 @@ fn run_validate(args: ValidateArgs, verbose: bool) -> i32 {
             issue.message
         );
     }
+    print_runtime_layers(&set);
     if verbose {
         for gate in &set.gates {
             println!("  - {gate}");
@@ -800,6 +801,51 @@ fn issues_json(set: &PolicySet) -> Value {
         .collect()
 }
 
+/// Which layers can carry a `runtime_command` into each runtime the user layer
+/// configured, so a runtime nothing reaches is a line in the report rather than
+/// a log entry found later.
+fn runtime_layers(set: &PolicySet) -> Value {
+    set.config
+        .actions
+        .runtimes
+        .iter()
+        .map(|runtime| {
+            json!({
+                "runtime": runtime,
+                "layers": karen::engine::runtime_command::layers_for(runtime),
+            })
+        })
+        .collect()
+}
+
+/// The layer table in `karen validate`'s text, printed only when an enabled
+/// gate would use it: a policy with no `runtime_command` has no use for the
+/// list, and a report that always carried it would be noise.
+fn print_runtime_layers(set: &PolicySet) {
+    if !set
+        .gates
+        .iter()
+        .any(|gate| gate.enabled && matches!(gate.action, ActionDef::RuntimeCommand { .. }))
+    {
+        return;
+    }
+    println!("runtime_command layers:");
+    for entry in runtime_layers(set).as_array().into_iter().flatten() {
+        let layers: Vec<&str> = entry["layers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let reach = if layers.is_empty() {
+            "none".to_string()
+        } else {
+            layers.join(", ")
+        };
+        println!("  {}: {reach}", entry["runtime"].as_str().unwrap_or(""));
+    }
+}
+
 fn policy_json(set: &PolicySet) -> Value {
     json!({
         "policy_root": set.root.display().to_string(),
@@ -829,6 +875,7 @@ fn policy_json(set: &PolicySet) -> Value {
             .map(|(layer, root)| json!({ "layer": layer.name(), "root": root.display().to_string() }))
             .collect::<Vec<_>>(),
         "project_found_by": set.found_by,
+        "runtime_layers": runtime_layers(set),
         "changes": set
             .changes
             .iter()
@@ -887,6 +934,7 @@ fn evaluation_json(
         "action": response.action.to_string(),
         "reason": action_reason(&response.action),
         "fired_policies": response.fired_policies,
+        "runtime_commands": response.runtime_commands,
         "injections": injections,
         "injection_chars": injection_chars,
         "modified_input": response.modified_input,
@@ -913,6 +961,7 @@ fn action_name(action: &ActionDef) -> &'static str {
         ActionDef::Modify { .. } => "modify",
         ActionDef::DenyOnceThenWarn { .. } => "deny_once_then_warn",
         ActionDef::Notify { .. } => "notify",
+        ActionDef::RuntimeCommand { .. } => "runtime_command",
     }
 }
 
@@ -1089,7 +1138,7 @@ fn schema_json(topic: Option<&str>) -> Result<Value, String> {
                 "command_regex", "command_contains", "file_regex", "path_regex",
                 "prompt_regex", "content_regex", "tool_regex", "field_equals", "field_regex", "field_json_regex", "field_gte", "field_lte", "file_older_than", "always"
             ],
-            "actions": ["allow", "deny", "ask", "modify", "deny_once_then_warn", "notify"],
+            "actions": ["allow", "deny", "ask", "modify", "deny_once_then_warn", "notify", "runtime_command"],
             "exit_codes": {"0": "success", "2": "usage or invalid input", "3": "not found", "78": "invalid policies"},
         },
         "invariants": [

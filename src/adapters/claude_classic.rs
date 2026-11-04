@@ -230,6 +230,7 @@ mod tests {
                 injections: vec![],
                 modified_input: None,
                 fired_policies: vec![],
+                runtime_commands: vec![],
             },
         );
         assert_eq!(

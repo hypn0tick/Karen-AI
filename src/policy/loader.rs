@@ -1,7 +1,7 @@
 //! Loads your rules from disk. She compiles regex once, then brings them up forever. The Karen who does the work once.
 
 use crate::engine::facts::FACT_NAMES;
-use crate::policy::gate::{CompileError, Gate, GateDef, Layer, Track};
+use crate::policy::gate::{ActionDef, CompileError, Gate, GateDef, Layer, Track};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,6 +19,45 @@ pub struct Config {
     pub maintenance: MaintenanceConfig,
     #[serde(default)]
     pub facts: FactsConfig,
+    #[serde(default)]
+    pub actions: ActionsConfig,
+}
+
+/// The runtimes `[actions] runtimes` may name, and the default set: every one
+/// of them. They are the `runtime` fact's values.
+pub const RUNTIMES: [&str; 3] = ["claude", "codex", "opencode"];
+
+/// What a gate's `runtime_command` may do. Both lists are the user layer's
+/// alone, like `[facts] env`: a project's config is repository content, and a
+/// repository that could name a command or a runtime would hand its own gates
+/// a keyboard the owner never lent. `karen validate` reports a project layer
+/// that sets either.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionsConfig {
+    /// The only commands a `runtime_command` may type (`"/compact"`), each one
+    /// word beginning with `/`; the arguments belong to the gate. Empty, the
+    /// default, allows none.
+    #[serde(default)]
+    pub runtime_commands: Vec<String>,
+    /// The runtimes she may type into. Unset, all three; `[]` is none. A
+    /// session on any other runtime is refused, and `karen validate` reports
+    /// which of these has no layer to reach it.
+    #[serde(default = "default_runtimes")]
+    pub runtimes: Vec<String>,
+}
+
+impl Default for ActionsConfig {
+    fn default() -> Self {
+        Self {
+            runtime_commands: Vec::new(),
+            runtimes: default_runtimes(),
+        }
+    }
+}
+
+fn default_runtimes() -> Vec<String> {
+    RUNTIMES.iter().map(|r| (*r).to_string()).collect()
 }
 
 /// What the environment facts look for. `tools` names the binaries `facts.tools`
@@ -698,7 +737,7 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
     let mut last = Layer::Builtin;
     let mut changes = Vec::new();
     let mut roots = Vec::new();
-    let mut user_env: Vec<String> = Vec::new();
+    let mut user = UserOnly::default();
 
     for files in layers {
         let layer = files.layer;
@@ -706,22 +745,11 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
         if let Some(root) = files.root {
             roots.push((layer, root));
         }
-        // The env allowlist is the user layer's and no other's, so it is
-        // captured before the tables merge: a merge that unions the lists
-        // would let repository content name a variable the user never did.
-        let env = env_names(&files.table);
-        if matches!(layer, Layer::User) {
-            user_env = env;
-        } else if !env.is_empty() {
-            issues.push(MergeIssue {
-                layer,
-                message: format!(
-                    "sets [facts] env ({}) — only the user layer's list is read, this one is ignored",
-                    env.join(", ")
-                ),
-                kind: IssueKind::Warning,
-            });
-        }
+        // These lists are the user layer's and no other's, so they are
+        // captured before the tables merge: a merge that unions lists
+        // would let repository content name a variable, a command or a
+        // runtime the user never did.
+        user.take(layer, &files.table, &mut issues);
         merge_tables(&mut table, files.table);
         let mut merged = Merged {
             gates: &mut gates,
@@ -741,9 +769,11 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
     }
 
     gates.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
-    warn_off_allowlist(&gates, &user_env, &mut issues);
+    let actions = user.actions(&mut issues);
+    warn_off_allowlist(&gates, &user.env, &mut issues);
     warn_key_fields(&gates, &mut issues);
     warn_unknown_facts(&gates, &mut issues);
+    warn_runtime_commands(&gates, &actions, &mut issues);
     // Each layer's sections deserialized alone; a merge that still does not
     // keeps the defaults rather than dropping a single gate.
     let mut config = config_from(&table, &primary).unwrap_or_else(|error| {
@@ -754,9 +784,11 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
         });
         Config::default()
     });
-    // The allowlist she reads is the user layer's alone, whatever the merged
-    // tables carried: repository content never names what she may read.
-    config.facts.env = user_env;
+    // The lists she reads are the user layer's alone, whatever the merged
+    // tables carried: repository content never names what she may read, type
+    // or reach.
+    config.facts.env = user.env;
+    config.actions = actions;
     PolicySet {
         gates,
         rules,
@@ -769,11 +801,13 @@ fn merge(layers: Vec<LayerFiles>, primary: PathBuf, mut issues: Vec<MergeIssue>)
     }
 }
 
-/// The `[facts] env` names one layer's own table lists, before any merge.
-fn env_names(table: &toml::Table) -> Vec<String> {
+/// The strings of `[section] key` in one layer's own table, before any merge;
+/// `None` when the layer does not set it. A set key that is not a list of
+/// strings is not read here, and the layer's config fails to load on its own.
+fn list_in(table: &toml::Table, section: &str, key: &str) -> Option<Vec<String>> {
     table
-        .get("facts")
-        .and_then(|facts| facts.get("env"))
+        .get(section)
+        .and_then(|section| section.get(key))
         .and_then(toml::Value::as_array)
         .map(|names| {
             names
@@ -781,7 +815,88 @@ fn env_names(table: &toml::Table) -> Vec<String> {
                 .filter_map(|name| name.as_str().map(str::to_string))
                 .collect()
         })
-        .unwrap_or_default()
+}
+
+/// The settings only the user layer may name, as that layer wrote them:
+/// `[facts] env`, `[actions] runtime_commands` and `[actions] runtimes`.
+#[derive(Default)]
+struct UserOnly {
+    env: Vec<String>,
+    runtime_commands: Vec<String>,
+    /// `None` when the user layer does not set it: the default set applies.
+    runtimes: Option<Vec<String>>,
+}
+
+impl UserOnly {
+    /// Take the user layer's lists; any other layer that sets one has it
+    /// ignored and named, because a project's config is repository content.
+    fn take(&mut self, layer: Layer, table: &toml::Table, issues: &mut Vec<MergeIssue>) {
+        let env = list_in(table, "facts", "env");
+        let commands = list_in(table, "actions", "runtime_commands");
+        let runtimes = list_in(table, "actions", "runtimes");
+        if matches!(layer, Layer::User) {
+            self.env = env.unwrap_or_default();
+            self.runtime_commands = commands.unwrap_or_default();
+            self.runtimes = runtimes;
+            return;
+        }
+        for (section, key, names) in [
+            ("facts", "env", env),
+            ("actions", "runtime_commands", commands),
+            ("actions", "runtimes", runtimes),
+        ] {
+            let Some(names) = names.filter(|names| !names.is_empty()) else {
+                continue;
+            };
+            issues.push(MergeIssue {
+                layer,
+                message: format!(
+                    "sets [{section}] {key} ({}) — only the user layer's list is read, this one is ignored",
+                    names.join(", ")
+                ),
+                kind: IssueKind::Warning,
+            });
+        }
+    }
+
+    /// The `[actions]` she enforces: the user layer's lists with every entry
+    /// she cannot honour dropped and named. A command is one word beginning
+    /// with `/`, with no control character; a runtime is one she knows.
+    fn actions(&self, issues: &mut Vec<MergeIssue>) -> ActionsConfig {
+        let mut warn = |message: String| {
+            issues.push(MergeIssue {
+                layer: Layer::User,
+                message,
+                kind: IssueKind::Warning,
+            });
+        };
+        let mut config = ActionsConfig::default();
+        for command in &self.runtime_commands {
+            if crate::engine::runtime_command::is_command(command) {
+                if !config.runtime_commands.contains(command) {
+                    config.runtime_commands.push(command.clone());
+                }
+            } else {
+                warn(format!(
+                    "ignores [actions] runtime_commands entry `{command}`: a command is one word beginning with `/`, and its arguments belong to the gate"
+                ));
+            }
+        }
+        if let Some(runtimes) = &self.runtimes {
+            config.runtimes.clear();
+            for runtime in runtimes {
+                if !RUNTIMES.contains(&runtime.as_str()) {
+                    warn(format!(
+                        "ignores [actions] runtimes entry `{runtime}` (known: {})",
+                        RUNTIMES.join(", ")
+                    ));
+                } else if !config.runtimes.contains(runtime) {
+                    config.runtimes.push(runtime.clone());
+                }
+            }
+        }
+        config
+    }
 }
 
 /// Name at the border what would otherwise run silent: a gate matching a
@@ -835,7 +950,7 @@ fn warn_off_allowlist(gates: &[Gate], user_env: &[String], issues: &mut Vec<Merg
             issues.push(MergeIssue {
                 layer: gate.layer,
                 message: format!(
-                    "`{}` templates {} in a reason — env facts never render; the placeholder stays literal",
+                    "`{}` templates {} in a reason or an argument — env facts never render; the placeholder stays literal",
                     gate.id,
                     templated.join(", ")
                 ),
@@ -893,6 +1008,82 @@ fn warn_unknown_facts(gates: &[Gate], issues: &mut Vec<MergeIssue>) {
                 kind: IssueKind::Warning,
             });
         }
+    }
+}
+
+/// A `runtime_command` types into a session, so every way it can come to
+/// nothing is named at the door rather than found in a log: a gate outside the
+/// user layer (ignored), a command off the allowlist (every attempt refused),
+/// text that cannot be typed, an agent-controlled placeholder in the
+/// arguments (left literal), and a configured runtime no layer reaches. A gate
+/// switched off types nothing and is left be.
+fn warn_runtime_commands(gates: &[Gate], actions: &ActionsConfig, issues: &mut Vec<MergeIssue>) {
+    use crate::engine::runtime_command as rc;
+    let mut live: Vec<&str> = Vec::new();
+    for gate in gates.iter().filter(|gate| gate.enabled) {
+        let ActionDef::RuntimeCommand { command, arguments } = &gate.action else {
+            continue;
+        };
+        let mut warn = |message: String| {
+            issues.push(MergeIssue {
+                layer: gate.layer,
+                message,
+                kind: IssueKind::Warning,
+            });
+        };
+        if gate.layer != Layer::User {
+            warn(format!(
+                "`{}` uses runtime_command from the {} layer — only the user layer may type into a session; the gate is ignored",
+                gate.id, gate.layer
+            ));
+            continue;
+        }
+        if !actions.runtime_commands.contains(command) {
+            warn(format!(
+                "`{}` sends `{command}`, which is not on the user layer's [actions] runtime_commands — every attempt is refused",
+                gate.id
+            ));
+            continue;
+        }
+        if let Some(text) = arguments {
+            if !rc::is_typeable(text) {
+                warn(format!(
+                    "`{}` has arguments that hold a control character or run past {} characters — nothing will be typed",
+                    gate.id,
+                    rc::MAX_LINE
+                ));
+            }
+            if text.contains("{command}") || text.contains("{tool}") {
+                warn(format!(
+                    "`{}` templates {{command}} or {{tool}} in its arguments — the agent's own text never types into a session; the placeholder stays literal",
+                    gate.id
+                ));
+            }
+        }
+        live.push(&gate.id);
+    }
+    if live.is_empty() {
+        return;
+    }
+    let unreached: Vec<&str> = actions
+        .runtimes
+        .iter()
+        .map(String::as_str)
+        .filter(|runtime| rc::layers_for(runtime).is_empty())
+        .collect();
+    if !unreached.is_empty() {
+        issues.push(MergeIssue {
+            layer: Layer::User,
+            message: format!(
+                "has no layer that reaches {} sessions, so {} will log `undelivered:no-layer` there (narrow [actions] runtimes to the runtimes you can reach)",
+                unreached.join(", "),
+                live.iter()
+                    .map(|id| format!("`{id}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            kind: IssueKind::Warning,
+        });
     }
 }
 

@@ -184,6 +184,10 @@ pub struct EngineResponse {
     pub modified_input: Option<serde_json::Value>,
     #[serde(default)]
     pub fired_policies: Vec<String>,
+    /// What every `runtime_command` that fired came to, in firing order: the
+    /// verdict never hides an attempt, delivered or not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_commands: Vec<CommandOutcome>,
 }
 
 impl EngineResponse {
@@ -194,8 +198,24 @@ impl EngineResponse {
             injections: Vec::new(),
             modified_input: None,
             fired_policies: Vec::new(),
+            runtime_commands: Vec::new(),
         }
     }
+}
+
+/// What became of one `runtime_command` attempt. `status` is `refused:<why>`
+/// when a rule of hers stopped it before it went anywhere,
+/// `undelivered:<why>` when it was allowed and never arrived, and the layer
+/// that took it otherwise; `layer` is the layer that carried it, `None` when
+/// none did. The Karen who writes down every message she tried to leave, and
+/// whether anyone picked up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandOutcome {
+    pub gate: String,
+    pub runtime: String,
+    pub command: String,
+    pub layer: Option<String>,
+    pub status: String,
 }
 
 impl fmt::Display for Action {

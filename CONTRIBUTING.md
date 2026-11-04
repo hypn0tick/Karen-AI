@@ -91,7 +91,7 @@ The Karen who checks your boxes, then adds three more.
 
 - [ ] `cargo fmt --check` passes
 - [ ] `cargo clippy --all-targets -- -D warnings` passes (zero warnings)
-- [ ] `cargo test` passes (all 288 tests: 41 unit + 20 integration + 227 e2e, zero ignored)
+- [ ] `cargo test` passes (all 311 tests: 44 unit + 20 integration + 247 e2e, zero ignored)
 - [ ] New code has doc comments with Karen voice
 - [ ] Commit messages follow conventions (no AI attribution)
 - [ ] Comments use backticks for code identifiers
@@ -107,7 +107,7 @@ src/
 ├── main.rs              # CLI entry point, commands
 ├── lib.rs               # Library exports
 ├── adapters/            # Runtime protocol translation
-├── engine/              # Dispatcher, injector, maintenance
+├── engine/              # Dispatcher, injector, facts, runtime commands, logs, maintenance
 ├── policy/              # Loader, gate compiler, config
 ├── state/               # FileStore, MemoryStore, ReadOnlyStore
 └── types.rs             # Shared types (Event, Action, Injection, etc.)
@@ -135,7 +135,7 @@ cargo test --test integration
 cargo test karen_verifies_deny_protocol_shape
 ```
 
-All 288 tests must pass (41 unit + 20 integration + 227 e2e — zero ignored). The Karen who counts, then counts again.
+All 311 tests must pass (44 unit + 20 integration + 247 e2e — zero ignored). The Karen who counts, then counts again.
 
 ---
 

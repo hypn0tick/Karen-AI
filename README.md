@@ -324,10 +324,37 @@ Back to facts that gate existence rather than occupancy: a gate that should only
 | `modify`               | Rewrite command           | gets fed up and just does it for you         |
 | `deny_once_then_warn`  | First deny, then allow on retry | teaches once                            |
 | `notify`               | Say it and proceed         | files the complaint and lets you through     |
+| `runtime_command`      | Type a slash command into the session | reaches past the hook API and types it herself, with your permission in writing |
 
 A `notify` reason lands in the session as a notice and as one JSON line — `time`, `session`, `gate`, `text` — in `<Karen home>/logs/karen-notify.jsonl`, rotated to `.jsonl.1` past 10 MiB. An orchestrator tails the log; the agent sees the notice; the call proceeds. `karen evaluate` rehearses a notify without filing the line.
 
 Reasons render `{gate}`, `{tool}`, `{command}`, and `{facts.<path>}`: the rendered fact from the enriched request — a string as itself, anything else as its compact JSON, an absent fact as `(unknown)`, never the empty string that reads like a value. The one fact never rendered is `facts.env.*`: the allowlist granted a match, not a broadcast into reasons, notices and the log, so the placeholder stays literal — and `karen validate` names a reason that templates one.
+
+### Runtime commands
+
+No hook can start `/compact`: the hook APIs answer a tool call, and none has an output field that types into the session. `runtime_command` is the last resort that does, and it is deliberately hard to reach.
+
+```json
+{
+  "id": "compact-when-full",
+  "event": "Stop",
+  "match": { "all": [ { "type": "field_gte", "field": "facts.context_ratio", "value": 0.85 } ] },
+  "action": { "type": "runtime_command", "command": "/compact", "arguments": "keep the open items and the shas" },
+  "state": { "key": "latch:compact", "field": "facts.context_ratio", "rearm_below": 0.5 }
+}
+```
+
+The call proceeds either way; a typed command is a side effect, not a verdict. Three rules keep it from being a keyboard anyone can borrow:
+
+- **User layer only.** A project's gates are repository content, and a repository does not get a keyboard. A project-layer gate that uses it is refused (`refused:not-user-layer`) and `karen validate` names it.
+- **Only commands the owner listed.** `[actions] runtime_commands = ["/compact"]` in the user layer's `config.toml`, each entry one word beginning with `/`; the arguments belong to the gate. The default list is empty, so nothing is allowed until the owner says so. A project layer's list is ignored and named, like `[facts] env`.
+- **Only runtimes the owner configured.** `[actions] runtimes` (user layer; default `claude`, `codex`, `opencode`). A session on any other is refused.
+
+Arguments render `{gate}` and `{facts.<path>}` and nothing else: the agent's own `{command}` and `{tool}` text stays literal, `facts.env.*` stays literal, and the rendered line must be one printable line (no control character, no line break, at most 1000 characters including the command), because a newline typed into a prompt submits it and an escape sequence is a keystroke. Text that cannot be typed is `undelivered:unsafe-text`.
+
+Every attempt ends as exactly one status, rides the verdict (`karen evaluate --json` shows `runtime_commands`) and lands as one JSON line — `time`, `session`, `gate`, `runtime`, `command`, `arguments`, `layer`, `status` — in `<Karen home>/logs/karen-runtime.jsonl`, rotated like the notify log. The log keeps the arguments as the gate wrote them, placeholders unexpanded: what a fact rendered into them is data about the session, and the ledger does not keep it. A rehearsal (`karen evaluate`) files nothing. A command no layer can carry is logged `undelivered:no-layer` and `karen validate` says which configured runtimes have no layer. Never silent.
+
+Which layer each runtime gets, and the whole status list: [`docs/runtime-control.md`](docs/runtime-control.md).
 
 ### State (deny_once_then_warn)
 
@@ -515,6 +542,11 @@ env = ["HCOM_INSTANCE"]  # the only variables `facts.env.<NAME>` may read — th
 # runtime so one runtime's number never answers for another's model. A window
 # the runtime reports (Codex's rollout, the OpenCode bridge) always wins.
 claude = 200000
+
+[actions]
+# Both lists are the USER layer's alone; a project layer's are ignored and named.
+runtime_commands = ["/compact"]   # the only commands `runtime_command` may type (default: none)
+runtimes = ["claude", "codex", "opencode"]  # the runtimes she may type into (default: all three)
 ```
 
 ---
@@ -589,7 +621,7 @@ cargo test --test test_e2e  # e2e lane only
 cargo test --test integration # integration tests only
 ```
 
-288 tests passing (41 unit, 20 integration, 227 e2e — zero ignored). The Karen
+311 tests passing (44 unit, 20 integration, 247 e2e — zero ignored). The Karen
 who verifies, then verifies the verification.
 
 ---
@@ -624,7 +656,7 @@ src/
 ├── policy/              # loader, gate compiler, config — The Karen who loads
 ├── state/               # FileStore, MemoryStore, ReadOnlyStore — The Karen who remembers, and forgets on request
 └── types.rs             # shared types — The Karen who defines
-docs/                    # reference pages: layered roots, session facts — The Karen who writes it down
+docs/                    # reference pages: layered roots, session facts, runtime control — The Karen who writes it down
 examples/                # the starter pack: gates, annotated config, one rule — The Karen who ships the curriculum
 ROADMAP.md               # audited direction — The Karen who approves, never writes, because she'd rather judge you than work on it herself
 policies/                # your policies (NOT git-tracked — see .gitignore) — The Karen who enforces your rules, not your commit history

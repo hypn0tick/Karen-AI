@@ -5,6 +5,6 @@ pub mod loader;
 
 pub use gate::{ActionDef, Gate, GateDef, Layer};
 pub use loader::{
-    Config, IssueKind, LoadError, MaintenanceConfig, MergeChange, MergeIssue, PolicySet, Roots,
-    Rule, load, load_roots,
+    ActionsConfig, Config, IssueKind, LoadError, MaintenanceConfig, MergeChange, MergeIssue,
+    PolicySet, Roots, Rule, load, load_roots,
 };

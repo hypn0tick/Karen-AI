@@ -1,10 +1,13 @@
 //! The dispatcher: evaluates policies and aggregates verdicts. The Karen who dispatches.
 
-use crate::engine::injector;
+use crate::engine::jsonl::{self, now_millis};
+use crate::engine::{injector, runtime_command};
 use crate::policy::PolicySet;
 use crate::policy::gate::{ActionDef, Gate, StateSpec};
 use crate::state::StateStore;
-use crate::types::{Action, EngineRequest, EngineResponse, Event, Injection, InjectionKind};
+use crate::types::{
+    Action, CommandOutcome, EngineRequest, EngineResponse, Event, Injection, InjectionKind,
+};
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
 
@@ -76,6 +79,7 @@ impl Engine {
         let mut injections: Vec<Injection> = Vec::new();
         let mut ask: Option<Action> = None;
         let mut modify: Option<Action> = None;
+        let mut commands: Vec<CommandOutcome> = Vec::new();
 
         let policies = self
             .policies
@@ -94,25 +98,8 @@ impl Engine {
         }
 
         for gate in Self::applicable(&policies, req) {
-            // A latch re-arms on every dispatch, matched or not: a gate that
-            // fires at 40% can never match below 30%, so a latch that waited
-            // for a match to clear would hold the gate shut for good. The
-            // field falling back below the line clears it, whatever the gate
-            // matches on. The Karen who resets the tripwire walking past it,
-            // not by stepping on it once more.
-            if let Some((field, rearm_below)) = gate.state.as_ref().and_then(StateSpec::latch) {
-                let key = state_key(gate);
-                let below_line = crate::policy::gate::lookup(req, field)
-                    .and_then(serde_json::Value::as_f64)
-                    .is_some_and(|number| number < rearm_below);
-                if below_line {
-                    self.state.remove(&req.session_id, &key);
-                }
-                // Latched, and the field has not fallen back below the line:
-                // the gate already fired, and she stays quiet until it has.
-                if self.state.get(&req.session_id, &key).is_some() {
-                    continue;
-                }
+            if self.held_by_latch(gate, req) {
+                continue;
             }
             if !gate.matcher.matches(req) {
                 continue;
@@ -126,13 +113,28 @@ impl Engine {
                     .set(&req.session_id, &state_key(gate), Value::from(now_millis()));
             }
 
+            // A command typed into the session is a side effect, not a
+            // verdict: the call proceeds, and the outcome rides the response
+            // (and the runtime log) whether or not anything carried it.
+            if let ActionDef::RuntimeCommand { command, arguments } = &gate.action {
+                commands.push(runtime_command::attempt(
+                    gate,
+                    command,
+                    arguments.as_deref(),
+                    req,
+                    &policies.config.actions,
+                    self.state.read_only(),
+                ));
+                continue;
+            }
+
             match self.evaluate(gate, req) {
                 Verdict::Deny(action, injection) => {
                     let mut injections = injections;
                     if let Some(inj) = injection {
                         injections.push(inj);
                     }
-                    return deny_with(action, fired, injections);
+                    return deny_with(action, fired, injections, commands);
                 }
                 Verdict::Ask(action) => {
                     ask.get_or_insert(action);
@@ -156,6 +158,7 @@ impl Engine {
                 injections,
                 modified_input,
                 fired_policies: fired,
+                runtime_commands: commands,
             };
         }
         if let Some(action) = ask {
@@ -164,6 +167,7 @@ impl Engine {
                 injections,
                 modified_input: None,
                 fired_policies: fired,
+                runtime_commands: commands,
             };
         }
 
@@ -185,7 +189,30 @@ impl Engine {
             injections,
             modified_input: None,
             fired_policies: fired,
+            runtime_commands: commands,
         }
+    }
+
+    /// Whether a latch keeps `gate` quiet for this request. A latch re-arms on
+    /// every dispatch, matched or not: a gate that fires at 40% can never match
+    /// below 30%, so a latch that waited for a match to clear would hold the
+    /// gate shut for good. The field falling back below the line clears it,
+    /// whatever the gate matches on. Latched, and the field has not fallen back
+    /// below the line: the gate already fired, and she stays quiet until it
+    /// has. The Karen who resets the tripwire walking past it, not by stepping
+    /// on it once more.
+    fn held_by_latch(&self, gate: &Gate, req: &EngineRequest) -> bool {
+        let Some((field, rearm_below)) = gate.state.as_ref().and_then(StateSpec::latch) else {
+            return false;
+        };
+        let key = state_key(gate);
+        let below_line = crate::policy::gate::lookup(req, field)
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|number| number < rearm_below);
+        if below_line {
+            self.state.remove(&req.session_id, &key);
+        }
+        self.state.get(&req.session_id, &key).is_some()
     }
 
     fn applicable<'a>(
@@ -201,7 +228,9 @@ impl Engine {
 
     fn evaluate(&self, gate: &Gate, req: &EngineRequest) -> Verdict {
         match &gate.action {
-            ActionDef::Allow => Verdict::Allow(None),
+            // Handled before a verdict is asked for (see `dispatch`): it types
+            // into the session and has no verdict of its own.
+            ActionDef::Allow | ActionDef::RuntimeCommand { .. } => Verdict::Allow(None),
             ActionDef::Notify { reason } => {
                 let text = expand(reason, gate, req);
                 // A rehearsal does not file: evaluate reads real strike state
@@ -292,17 +321,12 @@ fn state_key(gate: &Gate) -> String {
         .to_string()
 }
 
-/// Wall-clock milliseconds since the epoch: the value a latch arms with, so
-/// the ledger records when the gate last fired, not just that it did.
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
-fn deny_with(action: Action, fired: Vec<String>, injections: Vec<Injection>) -> EngineResponse {
+fn deny_with(
+    action: Action,
+    fired: Vec<String>,
+    injections: Vec<Injection>,
+    commands: Vec<CommandOutcome>,
+) -> EngineResponse {
     let modified_input = if let Action::Modify { modified_input, .. } = &action {
         modified_input.clone()
     } else {
@@ -314,6 +338,7 @@ fn deny_with(action: Action, fired: Vec<String>, injections: Vec<Injection>) -> 
         injections,
         modified_input,
         fired_policies: fired,
+        runtime_commands: commands,
     }
 }
 
@@ -363,10 +388,18 @@ fn convert_head_to_select_object(req: &EngineRequest) -> Option<serde_json::Valu
 /// the record, never the lockbox.
 fn expand(template: &str, gate: &Gate, req: &EngineRequest) -> String {
     // The Karen who remembers EXACTLY what she wants, and will certainly demand it.
-    let mut out = template
+    let text = template
         .replace("{gate}", &gate.id)
         .replace("{tool}", req.tool_name.as_deref().unwrap_or("unknown"))
         .replace("{command}", req.command().unwrap_or(""));
+    expand_facts(&text, req)
+}
+
+/// The `{facts.<path>}` half of [`expand`], for text that must not carry the
+/// agent's own `{tool}` and `{command}`: the arguments a `runtime_command`
+/// types into a session.
+pub(crate) fn expand_facts(template: &str, req: &EngineRequest) -> String {
+    let mut out = template.to_string();
     let mut from = 0;
     while let Some(open) = out[from..].find("{facts.") {
         let open = from + open;
@@ -405,42 +438,16 @@ fn render_fact(value: &serde_json::Value) -> String {
 /// 10 MiB the log rotates — one generation, `karen-notify.jsonl.1` — so a
 /// long-running runtime does not grow a log without end. The Karen who files
 /// every complaint, and empties the drawer when it sticks.
-const NOTIFY_MAX: u64 = 10 * 1024 * 1024;
 fn notify_log(session: &str, gate: &str, text: &str) {
-    use std::io::Write;
-    let dir = crate::home::karen_home().join("logs");
-    let path = dir.join("karen-notify.jsonl");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() >= NOTIFY_MAX) {
-        // One generation: the old .1 leaves with the log that replaced it.
-        let _ = std::fs::rename(&path, dir.join("karen-notify.jsonl.1"));
-    }
-    let line = serde_json::json!({
-        "time": now_millis(),
-        "session": session,
-        "gate": gate,
-        "text": one_line(text),
-    });
-    let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    else {
-        return;
-    };
-    let _ = writeln!(file, "{line}");
-}
-
-/// `text` on one line: a notify line is one line of the log, and a reason
-/// with a line break in it would become three.
-fn one_line(text: &str) -> String {
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
+    jsonl::append(
+        "karen-notify.jsonl",
+        &serde_json::json!({
+            "time": now_millis(),
+            "session": session,
+            "gate": gate,
+            "text": jsonl::one_line(text),
+        }),
+    );
 }
 
 /// The part of a tool input that decides what runs, for an input-tracked strike
