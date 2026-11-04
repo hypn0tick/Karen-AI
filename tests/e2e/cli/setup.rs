@@ -590,7 +590,7 @@ fn karen_installed_in_her_home_pins_her_own_path_in_hooks() {
         .unwrap_or(&shown)
         .replace('\\', "/");
     for runtime in ["claude", "opencode"] {
-        let out = std::process::Command::new(&installed)
+        let out = karen::proc::command(&installed)
             .env("HOME", &env.home_dir)
             .env_remove("KAREN_HOME")
             .args(["setup", "--project", runtime])

@@ -8,6 +8,8 @@ mod completion;
 #[cfg(test)]
 mod evaluate;
 #[cfg(test)]
+mod no_window;
+#[cfg(test)]
 mod schema;
 #[cfg(test)]
 mod setup;

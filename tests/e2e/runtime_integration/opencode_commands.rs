@@ -9,7 +9,6 @@ use crate::e2e::common::commands::{command_gate, runtime_lines, runtime_log, use
 use crate::e2e::common::{DEFAULT_CONFIG, TestEnv, runtime_available};
 use serde_json::Value;
 use serial_test::serial;
-use std::process::Command;
 
 /// The plugin under a mock client. `__SUMMARIZE__` is the client's
 /// `session.summarize`; `__PLUGIN__` and `__DIR__` are filled in.
@@ -78,7 +77,7 @@ fn run(
         );
     let script = env.temp_dir.path().join("drive-commands.mjs");
     std::fs::write(&script, driver).unwrap();
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_HOME", env.home_dir.join(".karen"))

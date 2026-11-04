@@ -10,7 +10,6 @@ use crate::types::EngineRequest;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Every fact name a gate may read under `facts.`: the list `docs/session-facts.md`
 /// answers to. `env` stands for `facts.env.<NAME>`, one allowlisted variable each.
@@ -585,7 +584,7 @@ fn tools_on_path(wanted: &[String]) -> BTreeSet<String> {
 /// repository there, or a git that will not answer is absent, because an
 /// empty string would claim a clean tree she never looked at.
 fn git_uncommitted(cwd: Option<&str>) -> Option<String> {
-    let out = Command::new("git")
+    let out = crate::proc::command("git")
         .args(["-C", cwd?, "status", "--porcelain"])
         .output()
         .ok()?;

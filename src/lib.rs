@@ -9,6 +9,7 @@ pub mod home;
 #[cfg(feature = "host")]
 pub mod host;
 pub mod policy;
+pub mod proc;
 pub mod state;
 pub mod types;
 

@@ -385,7 +385,7 @@ impl TestEnv {
 
     /// Create a karen command with the test environment configured
     pub fn karen_cmd(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(&self.karen_binary);
+        let mut cmd = karen::proc::command(&self.karen_binary);
         cmd.env("HOME", &self.home_dir)
             .env("KAREN_POLICIES", &self.policies_dir)
             // The runtimes' own directory overrides of whoever runs the suite
@@ -406,7 +406,7 @@ impl TestEnv {
 
     /// Create a karen command with `KAREN_DEV=1` for evaluate tests (exit 1 on fail-open)
     pub fn karen_cmd_dev(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(&self.karen_binary);
+        let mut cmd = karen::proc::command(&self.karen_binary);
         cmd.env("HOME", &self.home_dir)
             .env("KAREN_POLICIES", &self.policies_dir)
             .env_remove("CLAUDE_CONFIG_DIR")

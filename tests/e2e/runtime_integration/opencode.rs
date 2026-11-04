@@ -7,7 +7,6 @@ use crate::e2e::common::{
 };
 use serial_test::serial;
 use std::fs;
-use std::process::Command;
 
 #[test]
 #[serial]
@@ -66,7 +65,7 @@ console.log(JSON.stringify(result));
     )
     .unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)
@@ -159,7 +158,7 @@ console.log(JSON.stringify({{ afters, prompts }}));
     )
     .unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", env.policies_dir.join("not-here"))
@@ -255,7 +254,7 @@ console.log(JSON.stringify({{ counts, prompts }}));
     )
     .unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)
@@ -331,7 +330,7 @@ console.log(JSON.stringify({{ verdict }}));
     )
     .unwrap();
     let karen_home = env.temp_dir.path().join("karen-home");
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_HOME", &karen_home)
@@ -432,7 +431,7 @@ console.log(JSON.stringify({{ counts, prompts }}));
     )
     .unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)
@@ -536,7 +535,7 @@ console.log(JSON.stringify(sent));
     )
     .unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)
@@ -623,7 +622,7 @@ console.log(JSON.stringify({{ counts }}));
     )
     .unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)
@@ -715,7 +714,7 @@ console.log(JSON.stringify({{ counts, prompts }}));
     )
     .unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)
@@ -806,7 +805,7 @@ await new Promise((r) => setTimeout(r, 100));
     .unwrap();
 
     let run = |bin: &std::path::Path, log: &std::path::Path| {
-        let output = Command::new("node")
+        let output = karen::proc::command("node")
             .arg(&script)
             .env("HOME", &env.home_dir)
             .env("KAREN_POLICIES", &env.policies_dir)
@@ -841,7 +840,7 @@ await new Promise((r) => setTimeout(r, 100));
 
     // Without KAREN_LOG the log lives in her home: <KAREN_HOME>/logs.
     let karen_home = env.temp_dir.path().join("karen-home");
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_HOME", &karen_home)
@@ -937,7 +936,7 @@ console.log(JSON.stringify(result));
     .replace("__DIR__", &project_dir.display().to_string());
     fs::write(&script, driver).unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)
@@ -1072,7 +1071,7 @@ console.log(JSON.stringify(result));
     .replace("__DIR__", &project_dir.display().to_string());
     fs::write(&script, driver).unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)
@@ -1171,7 +1170,7 @@ console.log(JSON.stringify({ held: prompts.length }));
     .replace("__DIR__", &project_dir.display().to_string());
     fs::write(&script, driver).unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)
@@ -1269,7 +1268,7 @@ console.log(JSON.stringify({ held, after: prompts.slice(1) }));
     .replace("__DIR__", &project_dir.display().to_string());
     fs::write(&script, driver).unwrap();
 
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)
@@ -1341,7 +1340,7 @@ fn drive(
         ),
     )
     .unwrap();
-    let output = Command::new("node")
+    let output = karen::proc::command("node")
         .arg(&script)
         .env("HOME", &env.home_dir)
         .env("KAREN_POLICIES", &env.policies_dir)

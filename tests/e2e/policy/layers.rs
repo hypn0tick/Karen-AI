@@ -240,7 +240,7 @@ fn karen_finds_the_repository_layer_from_any_worktree() {
     let main = outer.join("main");
     std::fs::create_dir_all(&main).unwrap();
     let git = |dir: &std::path::Path, args: &[&str]| {
-        let status = std::process::Command::new("git")
+        let status = karen::proc::command("git")
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
             .args(args)
             .current_dir(dir)

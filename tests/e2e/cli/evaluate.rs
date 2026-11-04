@@ -414,7 +414,7 @@ fn karen_evaluate_git_uncommitted_is_absent_outside_a_repository_not_empty() {
     };
     let repo = env.temp_dir.path().join("clean-repo");
     std::fs::create_dir_all(&repo).unwrap();
-    std::process::Command::new("git")
+    karen::proc::command("git")
         .arg("-C")
         .arg(&repo)
         .args(["init", "-q"])
@@ -480,7 +480,7 @@ fn karen_evaluate_facts_name_the_mcp_servers_and_uncommitted_work() {
     let repo = env.temp_dir.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     let git = |args: &[&str]| {
-        std::process::Command::new("git")
+        karen::proc::command("git")
             .arg("-C")
             .arg(&repo)
             .args(args)

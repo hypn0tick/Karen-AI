@@ -6,14 +6,14 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use karen::host::endpoint::{self, HostStatus};
 use karen::host::{Request, Response};
 
-use crate::e2e::common::karen_binary_path;
+use crate::e2e::common::{built_example, karen_binary_path};
 
 #[cfg(test)]
 mod deliver;
@@ -23,32 +23,10 @@ mod run;
 /// How long any one wait may take. `ConPTY` is not quick to start on a busy machine.
 const PATIENCE: Duration = Duration::from_secs(20);
 
-/// The fake runtime, built fresh beside the `karen` binary. `cargo test --test test_e2e` builds the
-/// binary but not the examples, and a stale fake runtime would make every test here lie, so the
-/// first caller builds it (a no-op when it is current) and everyone else reuses the path.
+/// The fake runtime, built fresh beside the `karen` binary the first time it is asked for.
 fn fake_runtime() -> PathBuf {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let mut build = Command::new(env!("CARGO"));
-            build
-                .args(["build", "--quiet", "--example", "fake-runtime"])
-                .arg("--manifest-path")
-                .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
-            if !cfg!(debug_assertions) {
-                build.arg("--release");
-            }
-            let outcome = build.status().expect("cargo runs");
-            assert!(outcome.success(), "the fake runtime must build");
-            let path = karen_binary_path()
-                .parent()
-                .expect("the binary has a directory")
-                .join("examples")
-                .join(format!("fake-runtime{}", std::env::consts::EXE_SUFFIX));
-            assert!(path.exists(), "{} is missing", path.display());
-            path
-        })
-        .clone()
+    BUILT.get_or_init(|| built_example("fake-runtime")).clone()
 }
 
 /// Poll `probe` until it returns `Some`, or fail with `what` after [`PATIENCE`].
@@ -86,7 +64,7 @@ impl Hosted {
     /// recorded as runtime `name` when given.
     fn start_in(home: &Path, name: Option<&str>, args: &[&str], work_ms: u64) -> Self {
         let log = tempfile::NamedTempFile::new().expect("a log file");
-        let mut command = Command::new(karen_binary_path());
+        let mut command = karen::proc::command(karen_binary_path());
         command.arg("run");
         if let Some(name) = name {
             command.args(["--as", name]);

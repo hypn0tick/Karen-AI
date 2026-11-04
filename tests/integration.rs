@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::process::Command;
 
 /// The `karen` binary Cargo built for this test run, from the same sources and
 /// profile as the tests. A copy left in `target/release` by an earlier build
@@ -66,7 +65,7 @@ fn run_hook(input: &str, args: &[&str]) -> (i32, String, String) {
     // she doesn't pad it with her rehearsals, and she rehearsed plenty.
     let home = tempfile::tempdir().expect("temp home for hook state");
     let policies = fixture_policies();
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.env("HOME", home.path());
     cmd.arg("hook");
     cmd.arg("--adapter");
@@ -157,7 +156,7 @@ fn hook_sessionstart_part_beyond_count_is_empty() {
 #[test]
 fn validate_command_reports_policy_health() {
     let policies = fixture_policies();
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.arg("validate");
     cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
@@ -174,7 +173,7 @@ fn validate_command_reports_policy_health() {
 #[test]
 fn check_command_lists_gates_and_rules() {
     let policies = fixture_policies();
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.arg("check");
     cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
@@ -199,7 +198,7 @@ fn check_command_lists_gates_and_rules() {
 fn evaluate_command_dry_runs() {
     let input = r#"{"hook_event_name":"PreToolUse","session_id":"test-eval","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
     let policies = fixture_policies();
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.arg("evaluate");
     cmd.arg("--policies").arg(policies.path());
     cmd.arg("--request");
@@ -231,7 +230,7 @@ fn evaluate_command_dry_runs() {
 /// schema command lists all commands and types
 #[test]
 fn schema_command_lists_commands() {
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.arg("schema");
     cmd.arg("--json");
     let output = cmd.output().expect("failed to run schema");
@@ -260,7 +259,7 @@ fn schema_command_lists_commands() {
 /// schema with topic filters to one command
 #[test]
 fn schema_with_topic_returns_filtered() {
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.arg("schema");
     cmd.arg("hook");
     cmd.arg("--json");
@@ -277,7 +276,7 @@ fn schema_with_topic_returns_filtered() {
 /// Unknown schema topic returns error with exit code 2
 #[test]
 fn unknown_schema_topic_returns_error() {
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.arg("schema");
     cmd.arg("nonexistent");
     let output = cmd.output().expect("failed to run schema");
@@ -289,7 +288,7 @@ fn unknown_schema_topic_returns_error() {
 #[test]
 fn validate_json_fields_filter() {
     let policies = fixture_policies();
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.arg("validate");
     cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
@@ -312,7 +311,7 @@ fn validate_json_fields_filter() {
 #[test]
 fn validate_json_unknown_fields_errors() {
     let policies = fixture_policies();
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.arg("validate");
     cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
@@ -331,7 +330,7 @@ fn validate_json_unknown_fields_errors() {
 #[test]
 fn missing_policies_returns_config_error() {
     let bin = binary();
-    let mut cmd = Command::new(&bin);
+    let mut cmd = karen::proc::command(&bin);
     cmd.arg("validate");
     cmd.arg("--policies");
     cmd.arg("/nonexistent/path");
@@ -349,7 +348,7 @@ fn missing_policies_returns_config_error() {
 #[test]
 fn engine_loads_gates_and_rules_from_files() {
     let policies = fixture_policies();
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.arg("validate");
     cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");
@@ -366,7 +365,7 @@ fn engine_loads_gates_and_rules_from_files() {
 #[test]
 fn engine_reads_fail_open_from_config() {
     let policies = fixture_policies();
-    let mut cmd = Command::new(binary());
+    let mut cmd = karen::proc::command(binary());
     cmd.arg("validate");
     cmd.arg("--policies").arg(policies.path());
     cmd.arg("--json");

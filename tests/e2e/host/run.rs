@@ -1,7 +1,6 @@
 // tests/e2e/host/run.rs
 // The Karen who hosts a runtime and is held to account for the terminal she borrowed.
 
-use std::process::Command;
 use std::time::Duration;
 
 use karen::host::endpoint::{self, ENV_PID, ENV_RUNTIME};
@@ -190,7 +189,7 @@ fn karen_run_stops_answering_once_the_runtime_is_gone() {
 
 #[test]
 fn karen_run_reports_a_runtime_that_is_not_on_path() {
-    let output = Command::new(karen_binary_path())
+    let output = karen::proc::command(karen_binary_path())
         .args(["run", "no-such-runtime-anywhere"])
         .output()
         .expect("karen runs");

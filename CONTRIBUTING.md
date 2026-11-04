@@ -64,6 +64,7 @@ The author's karen enforces these on his own pushes via his personal `commit-att
 - **No `unwrap()` in production code** — use `expect()` with context or proper error handling
 - **No `todo!()` or `unimplemented!()`** in merged code
 - **Error types use `thiserror`** — no `Box<dyn Error>` in public APIs
+- **Start child processes with `karen::proc::command`**, in the library and in tests — never `Command::new`. On Windows a console program started by a process with no console opens a window on the owner's desktop, and a hook that starts one per tool call flashes it per tool call. `CREATE_NO_WINDOW` stops it; a test pins it. The one exception is the pseudo-console child `karen run` hosts
 
 ---
 
@@ -92,7 +93,7 @@ The Karen who checks your boxes, then adds three more.
 
 - [ ] `cargo fmt --check` passes
 - [ ] `cargo clippy --all-targets -- -D warnings` passes (zero warnings)
-- [ ] `cargo test` passes (all 390 tests: 84 unit + 20 integration + 286 e2e, zero ignored)
+- [ ] `cargo test` passes (all 394 tests: 84 unit + 20 integration + 290 e2e, zero ignored)
 - [ ] New code has doc comments with Karen voice
 - [ ] Commit messages follow conventions (no AI attribution)
 - [ ] Comments use backticks for code identifiers
@@ -137,7 +138,7 @@ cargo test --test integration
 cargo test karen_verifies_deny_protocol_shape
 ```
 
-All 390 tests must pass (84 unit + 20 integration + 286 e2e — zero ignored). The Karen who counts, then counts again.
+All 394 tests must pass (84 unit + 20 integration + 290 e2e — zero ignored). The Karen who counts, then counts again.
 
 ---
 
